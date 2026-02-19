@@ -1,0 +1,297 @@
+/**
+ * @file    XCespProc.cpp
+ * @brief   XCespProc — XCESP processing application implementation
+ * @project XCESP
+ * @date    2026-02-19
+ */
+
+#include "XCespProc.h"
+
+#include "ConsoleWriter.h"
+#include "FileWriter.h"
+#include "SyslogWriter.h"
+#include "UdpTesterPObj.h"
+
+#include <algorithm>
+#include <iostream>
+
+#ifndef PRJNAME
+#define PRJNAME "xcespproc"
+#endif
+#ifndef PRJVERSION
+#define PRJVERSION "0.0.0"
+#endif
+
+// ---------------------------------------------------------------------------
+// Constructor / destructor
+// ---------------------------------------------------------------------------
+
+XCespProc::XCespProc(int argc, char* argv[])
+    : argConfig(argc, argv)
+{
+    argConfig.addOption('c', "config",     "Path to INI configuration file");
+    argConfig.addOption('p', "local-port", "Local UDP syslog listen port (overrides LOG_LOCAL_PORT)");
+    argConfig.addFlag  ('v', "verbose",    "Enable verbose (DEBUG) output on all writers");
+    argConfig.addFlag  ('h', "help",       "Show this help message and exit");
+}
+
+XCespProc::~XCespProc()
+{
+    if (procThread) {
+        procThread->signal();
+    }
+    if (syslogReader && syslogReader->getSocketFd() >= 0) {
+        removeSocket(syslogReader->getSocketFd());
+    }
+    endApplication();
+    delete syslogReader;
+    delete iniConfig;
+}
+
+// ---------------------------------------------------------------------------
+// init
+// ---------------------------------------------------------------------------
+
+bool XCespProc::init()
+{
+    // 1. Banner
+    printBanner();
+
+    // 2. Bootstrap console writer while INI is not yet loaded; parse args
+    ConsoleWriter bootstrap(true, true);
+    bootstrap.setMinLevel(LOG_INFO);
+    logManager.addWriter(&bootstrap);
+
+    if (!argConfig.parse()) {
+        logManager.log(LOG_FATAL, PRJNAME, "Argument parsing failed");
+        std::cout << std::string("Arguments:\n");
+        std::cout << argConfig.getHelp();
+        logManager.removeWriter(&bootstrap);
+        return false;
+    }
+
+    if (argConfig.hasFlag('h')) {
+        std::cout << std::string("Arguments:\n");
+        std::cout << argConfig.getHelp();
+        logManager.removeWriter(&bootstrap);
+        return false;
+    }
+
+    verbose    = argConfig.hasFlag('v');
+    configFile = argConfig.getValue('c', std::string("xcespproc.ini"));
+
+    // 3. Load INI
+    iniConfig = new IniConfig(configFile);
+    if (!iniConfig->isLoaded()) {
+        logManager.log(LOG_FATAL, PRJNAME,
+                       "Cannot load configuration file: " + configFile);
+        logManager.removeWriter(&bootstrap);
+        return false;
+    }
+
+    // 4. Switch to configured writers
+    setupLogging();
+    logManager.removeWriter(&bootstrap);
+
+    logManager.log(LOG_INFO, PRJNAME,
+                   std::string(PRJNAME) + " v" + PRJVERSION + " starting");
+
+    // 5. Initialise EvApplication (clears all registered sockets)
+    if (!initApplication()) {
+        logManager.log(LOG_FATAL, PRJNAME, "initApplication() failed");
+        return false;
+    }
+
+    // 6. Re-register syslog listener (must be after initApplication)
+    if (syslogReader && syslogReader->getSocketFd() >= 0) {
+        addSocket(syslogReader->getSocketFd(), &XCespProc::syslogSocketCallback, this);
+    }
+
+    // 7. Load processing objects from [object.N] sections
+    loadObjects();
+
+    // 8-10. Create processing thread, register timer, start thread
+    procThread = addThread();
+    procThread->addTimer(100, &XCespProc::processingTimerCallback, this, true);
+    procThread->start();
+
+    logManager.log(LOG_INFO, PRJNAME,
+                   "Processing thread started (" +
+                   std::to_string(procObjects.size()) +
+                   " object(s), 100 ms tick)");
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// run
+// ---------------------------------------------------------------------------
+
+void XCespProc::run()
+{
+    logManager.log(LOG_INFO, PRJNAME, "Entering event loop");
+    runLoop();
+    logManager.log(LOG_INFO, PRJNAME, "Event loop exited");
+}
+
+// ---------------------------------------------------------------------------
+// setupLogging
+// ---------------------------------------------------------------------------
+
+void XCespProc::setupLogging()
+{
+    LogLevel consoleLevel = parseLogLevel(iniConfig->getValue("PROC", "LOG_CONSOLE_LEVEL", "Info"));
+    LogLevel fileLevel    = parseLogLevel(iniConfig->getValue("PROC", "LOG_FILE_LEVEL",    "Info"));
+    LogLevel syslogLevel  = parseLogLevel(iniConfig->getValue("PROC", "LOG_SYSLOG_LEVEL",  "Info"));
+
+    // -v flag forces DEBUG on all writers
+    if (verbose) {
+        consoleLevel = LOG_DEBUG;
+        fileLevel    = LOG_DEBUG;
+        syslogLevel  = LOG_DEBUG;
+    }
+
+    // --- Console writer ---
+    if (iniConfig->getValueBoolean("PROC", "LOG_CONSOLE_ENABLED", true)) {
+        bool useStderr = iniConfig->getValueBoolean("PROC", "LOG_CONSOLE_STDERR", false);
+        auto* console  = new ConsoleWriter(true, useStderr);
+        console->setMinLevel(consoleLevel);
+        logManager.addWriter(console);
+    }
+
+    // --- File writer ---
+    if (iniConfig->getValueBoolean("PROC", "LOG_FILE_ENABLED", false)) {
+        std::string logFile = iniConfig->getValue("PROC", "LOG_FILE", "/var/log/xcespproc.log");
+        bool cleanStart     = iniConfig->getValueBoolean("PROC", "LOG_FILE_CLEANSTART", false);
+        auto* fileWriter    = new FileWriter(logFile, cleanStart);
+        fileWriter->setMinLevel(fileLevel);
+        logManager.addWriter(fileWriter);
+    }
+
+    // --- Remote syslog server 1 ---
+    std::string srv1Host = iniConfig->getValue("PROC", "LOG_SYSLOG_SERVER1_HOST", "");
+    if (!srv1Host.empty()) {
+        int port = static_cast<int>(iniConfig->getValueInteger("PROC", "LOG_SYSLOG_SERVER1_PORT", 514));
+        auto* syslog1 = new SyslogWriter(srv1Host, port);
+        syslog1->setMinLevel(syslogLevel);
+        logManager.addWriter(syslog1);
+    }
+
+    // --- Remote syslog server 2 ---
+    std::string srv2Host = iniConfig->getValue("PROC", "LOG_SYSLOG_SERVER2_HOST", "");
+    if (!srv2Host.empty()) {
+        int port = static_cast<int>(iniConfig->getValueInteger("PROC", "LOG_SYSLOG_SERVER2_PORT", 514));
+        auto* syslog2 = new SyslogWriter(srv2Host, port);
+        syslog2->setMinLevel(syslogLevel);
+        logManager.addWriter(syslog2);
+    }
+
+    // --- Local UDP syslog listener ---
+    // Priority: -p argument > LOG_LOCAL_PORT ini value > built-in default (1515)
+    localPort = static_cast<int>(iniConfig->getValueInteger("PROC", "LOG_LOCAL_PORT", 1515));
+    auto portArg = argConfig.getValue('p');
+    if (portArg.has_value()) {
+        try { localPort = std::stoi(portArg.value()); } catch (...) {}
+    }
+
+    syslogReader = new SyslogReader(localPort, nullptr, &logManager);
+    try {
+        syslogReader->openSocket();
+        addSocket(syslogReader->getSocketFd(), &XCespProc::syslogSocketCallback, this);
+        logManager.log(LOG_DEBUG, PRJNAME,
+                       "Local syslog listener open on UDP port " + std::to_string(localPort));
+    } catch (const std::exception& e) {
+        logManager.log(LOG_WARNING, PRJNAME,
+                       std::string("Cannot open local syslog listener: ") + e.what());
+        delete syslogReader;
+        syslogReader = nullptr;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// loadObjects
+// ---------------------------------------------------------------------------
+
+void XCespProc::loadObjects()
+{
+    for (int i = 1; ; ++i) {
+        std::string section = "object." + std::to_string(i);
+        auto typeVal = iniConfig->getValue(section, "TYPE");
+        if (!typeVal.has_value() || typeVal->empty()) break;
+
+        const std::string& type = typeVal.value();
+
+        std::unique_ptr<ProcObject> obj;
+
+        if (type == "UdpTester") {
+            obj = std::make_unique<UdpTesterPObj>();
+        } else {
+            logManager.log(LOG_WARNING, PRJNAME,
+                           section + ": unknown TYPE \"" + type + "\" — skipping");
+            continue;
+        }
+
+        if (!obj->loadConfig(*iniConfig, section)) {
+            logManager.log(LOG_WARNING, PRJNAME,
+                           section + ": loadConfig() failed — skipping");
+            continue;
+        }
+
+        logManager.log(LOG_DEBUG, PRJNAME,
+                       "Loaded object: " + obj->getName() + " (type=" + type + ")");
+        procObjects.push_back(std::move(obj));
+    }
+
+    logManager.log(LOG_DEBUG, PRJNAME,
+                   "loadObjects: " + std::to_string(procObjects.size()) + " object(s) loaded");
+}
+
+// ---------------------------------------------------------------------------
+// processingTick
+// ---------------------------------------------------------------------------
+
+void XCespProc::processingTick()
+{
+    for (auto& obj : procObjects) {
+        obj->process();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+void XCespProc::printBanner() const
+{
+    const std::string name    = std::string(PRJNAME) + " v" + PRJVERSION;
+    const std::string purpose = "XCESP Processing Application";
+    const int width = static_cast<int>(std::max(name.size(), purpose.size())) + 4;
+    const std::string bar(width, '-');
+
+    std::cout << "+" << bar << "+\n"
+              << "|  " << name    << std::string(width - 2 - name.size(),    ' ') << "|\n"
+              << "|  " << purpose << std::string(width - 2 - purpose.size(), ' ') << "|\n"
+              << "+" << bar << "+\n" << std::flush;
+}
+
+LogLevel XCespProc::parseLogLevel(const std::string& s)
+{
+    if (s == "Debug"   || s == "debug"   || s == "DEBUG")   return LOG_DEBUG;
+    if (s == "Info"    || s == "info"    || s == "INFO")     return LOG_INFO;
+    if (s == "Warning" || s == "warning" || s == "WARNING")  return LOG_WARNING;
+    if (s == "Error"   || s == "error"   || s == "ERROR")    return LOG_ERROR;
+    if (s == "Fatal"   || s == "fatal"   || s == "FATAL")    return LOG_FATAL;
+    return LOG_INFO;
+}
+
+void XCespProc::syslogSocketCallback(int fd, void* userData)
+{
+    (void)fd;
+    static_cast<XCespProc*>(userData)->syslogReader->receiveAndProcess();
+}
+
+void XCespProc::processingTimerCallback(int id, void* userData)
+{
+    (void)id;
+    static_cast<XCespProc*>(userData)->processingTick();
+}

@@ -1,0 +1,23 @@
+# Build artifacts
+/build/
+/bin/
+
+# Test binaries (built by make test) — INI config IS tracked
+/test/xcespproc
+!/test/xcespproc.ini
+
+# Compiled dependency libraries (populated by make)
+/lib/
+
+# Dependency headers copied by make — only own headers are tracked
+/include/*
+!/include/XCespProc.h
+
+# Object and binary files
+*.o
+*.a
+*.so
+*.out
+
+# Claude Code internal
+.claude/
