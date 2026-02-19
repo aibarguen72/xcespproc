@@ -29,10 +29,11 @@
 XCespProc::XCespProc(int argc, char* argv[])
     : argConfig(argc, argv)
 {
-    argConfig.addOption('c', "config",     "Path to INI configuration file");
-    argConfig.addOption('p', "local-port", "Local syslog forwarding port (overrides LOG_LOCAL_PORT)");
-    argConfig.addFlag  ('v', "verbose",    "Enable verbose (DEBUG) output on all writers");
-    argConfig.addFlag  ('h', "help",       "Show this help message and exit");
+    argConfig.addOption('c', "config",          "Path to INI configuration file");
+    argConfig.addOption('p', "local-port",      "Local syslog forwarding port (overrides LOG_LOCAL_PORT)");
+    argConfig.addOption('s', "signal-interval", "Seconds between SIGUSR1 heartbeats to parent (default 20)");
+    argConfig.addFlag  ('v', "verbose",         "Enable verbose (DEBUG) output on all writers");
+    argConfig.addFlag  ('h', "help",            "Show this help message and exit");
 }
 
 XCespProc::~XCespProc()
@@ -98,7 +99,20 @@ bool XCespProc::init()
         return false;
     }
 
-    // 6. Main thread 10 s heartbeat timer
+    // 6. SIGUSR1 heartbeat to parent process
+    int signalIntervalSec = 20;
+    auto sArg = argConfig.getValue('s');
+    if (sArg.has_value()) {
+        try { signalIntervalSec = std::stoi(sArg.value()); } catch (...) {}
+    }
+    if (signalIntervalSec > 0) {
+        setParentHeartbeat(signalIntervalSec * 1000);
+        logManager.log(LOG_DEBUG, PRJNAME,
+                       "SIGUSR1 heartbeat to parent every " +
+                       std::to_string(signalIntervalSec) + " s");
+    }
+
+    // 7. Main thread 10 s heartbeat timer
     addTimer(10000, &XCespProc::mainTimerCallback, this, true);
 
     // 7. Load processing objects from [object.N] sections
