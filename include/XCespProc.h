@@ -68,6 +68,8 @@ private:
 
     std::string configFile;
     bool        verbose   = false;
+    int         procId    = 1;
+    std::string logTag;           ///< e.g. "xcespproc-1" — used as the log source tag
     int         localPort = 1514;
 
     /**

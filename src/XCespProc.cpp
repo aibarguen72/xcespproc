@@ -30,6 +30,7 @@ XCespProc::XCespProc(int argc, char* argv[])
     : argConfig(argc, argv)
 {
     argConfig.addOption('c', "config",          "Path to INI configuration file");
+    argConfig.addOption('i', "id",              "Process instance ID shown in banner and log tag (default 1)");
     argConfig.addOption('p', "local-port",      "Local syslog forwarding port (overrides LOG_LOCAL_PORT)");
     argConfig.addOption('s', "signal-interval", "Seconds between SIGUSR1 heartbeats to parent (default 20)");
     argConfig.addFlag  ('v', "verbose",         "Enable verbose (DEBUG) output on all writers");
@@ -51,10 +52,7 @@ XCespProc::~XCespProc()
 
 bool XCespProc::init()
 {
-    // 1. Banner
-    printBanner();
-
-    // 2. Bootstrap console writer while INI is not yet loaded; parse args
+    // 1. Bootstrap console writer; parse args first so the ID is known for the banner
     ConsoleWriter bootstrap(true, true);
     bootstrap.setMinLevel(LOG_INFO);
     logManager.addWriter(&bootstrap);
@@ -77,10 +75,17 @@ bool XCespProc::init()
     verbose    = argConfig.hasFlag('v');
     configFile = argConfig.getValue('c', std::string("xcespproc.ini"));
 
+    try { procId = std::stoi(argConfig.getValue('i', std::string("1"))); } catch (...) {}
+    if (procId < 1) procId = 1;
+    logTag = std::string(PRJNAME) + "-" + std::to_string(procId);
+
+    // 2. Banner — shows logTag and version
+    printBanner();
+
     // 3. Load INI
     iniConfig = new IniConfig(configFile);
     if (!iniConfig->isLoaded()) {
-        logManager.log(LOG_FATAL, PRJNAME,
+        logManager.log(LOG_FATAL, logTag,
                        "Cannot load configuration file: " + configFile);
         logManager.removeWriter(&bootstrap);
         return false;
@@ -90,12 +95,11 @@ bool XCespProc::init()
     setupLogging();
     logManager.removeWriter(&bootstrap);
 
-    logManager.log(LOG_INFO, PRJNAME,
-                   std::string(PRJNAME) + " v" + PRJVERSION + " starting");
+    logManager.log(LOG_INFO, logTag, logTag + " v" + PRJVERSION + " starting");
 
     // 5. Initialise EvApplication
     if (!initApplication()) {
-        logManager.log(LOG_FATAL, PRJNAME, "initApplication() failed");
+        logManager.log(LOG_FATAL, logTag, "initApplication() failed");
         return false;
     }
 
@@ -107,7 +111,7 @@ bool XCespProc::init()
     }
     if (signalIntervalSec > 0) {
         setParentHeartbeat(signalIntervalSec * 1000);
-        logManager.log(LOG_DEBUG, PRJNAME,
+        logManager.log(LOG_DEBUG, logTag,
                        "SIGUSR1 heartbeat to parent every " +
                        std::to_string(signalIntervalSec) + " s");
     }
@@ -115,15 +119,15 @@ bool XCespProc::init()
     // 7. Main thread 10 s heartbeat timer
     addTimer(10000, &XCespProc::mainTimerCallback, this, true);
 
-    // 7. Load processing objects from [object.N] sections
+    // 8. Load processing objects from [object.N] sections
     loadObjects();
 
-    // 8-10. Create processing thread, register timer, start thread
+    // 9-11. Create processing thread, register timer, start thread
     procThread = addThread();
     procThread->addTimer(100, &XCespProc::processingTimerCallback, this, true);
     procThread->start();
 
-    logManager.log(LOG_INFO, PRJNAME,
+    logManager.log(LOG_INFO, logTag,
                    "Processing thread started (" +
                    std::to_string(procObjects.size()) +
                    " object(s), 100 ms tick)");
@@ -137,9 +141,9 @@ bool XCespProc::init()
 
 void XCespProc::run()
 {
-    logManager.log(LOG_INFO, PRJNAME, "Entering event loop");
+    logManager.log(LOG_INFO, logTag, "Entering event loop");
     runLoop();
-    logManager.log(LOG_INFO, PRJNAME, "Event loop exited");
+    logManager.log(LOG_INFO, logTag, "Event loop exited");
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +193,7 @@ void XCespProc::setupLogging()
         auto* localSyslog = new SyslogWriter("127.0.0.1", localPort);
         localSyslog->setMinLevel(localLevel);
         logManager.addWriter(localSyslog);
-        logManager.log(LOG_DEBUG, PRJNAME,
+        logManager.log(LOG_DEBUG, logTag,
                        "Forwarding logs to 127.0.0.1:" + std::to_string(localPort));
     }
 }
@@ -212,23 +216,23 @@ void XCespProc::loadObjects()
         if (type == "UdpTester") {
             obj = std::make_unique<UdpTesterPObj>();
         } else {
-            logManager.log(LOG_WARNING, PRJNAME,
+            logManager.log(LOG_WARNING, logTag,
                            section + ": unknown TYPE \"" + type + "\" — skipping");
             continue;
         }
 
         if (!obj->loadConfig(*iniConfig, section)) {
-            logManager.log(LOG_WARNING, PRJNAME,
+            logManager.log(LOG_WARNING, logTag,
                            section + ": loadConfig() failed — skipping");
             continue;
         }
 
-        logManager.log(LOG_DEBUG, PRJNAME,
+        logManager.log(LOG_DEBUG, logTag,
                        "Loaded object: " + obj->getName() + " (type=" + type + ")");
         procObjects.push_back(std::move(obj));
     }
 
-    logManager.log(LOG_DEBUG, PRJNAME,
+    logManager.log(LOG_DEBUG, logTag,
                    "loadObjects: " + std::to_string(procObjects.size()) + " object(s) loaded");
 }
 
@@ -238,7 +242,7 @@ void XCespProc::loadObjects()
 
 void XCespProc::mainTick()
 {
-    logManager.log(LOG_DEBUG, PRJNAME, "heartbeat");
+    logManager.log(LOG_DEBUG, logTag, "heartbeat");
 }
 
 void XCespProc::processingTick()
@@ -254,7 +258,7 @@ void XCespProc::processingTick()
 
 void XCespProc::printBanner() const
 {
-    const std::string name    = std::string(PRJNAME) + " v" + PRJVERSION;
+    const std::string name    = logTag + " v" + PRJVERSION;
     const std::string purpose = "XCESP Processing Application";
     const int width = static_cast<int>(std::max(name.size(), purpose.size())) + 4;
     const std::string bar(width, '-');
