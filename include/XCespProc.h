@@ -16,7 +16,6 @@
 #include "LogManager.h"
 #include "IniConfig.h"
 #include "ArgConfig.h"
-#include "SyslogReader.h"
 
 #include "ProcObject.h"
 
@@ -29,8 +28,8 @@ class EvThread;
  * Inherits the EvApplication event loop and adds:
  *  - Command-line argument parsing (ArgConfig)
  *  - INI-based configuration loading (IniConfig)
- *  - Centralised logging (LogManager): console, file, up to two syslog servers
- *  - Local UDP syslog listener (SyslogReader) integrated into the event loop
+ *  - Centralised logging (LogManager): console, file, and optional local
+ *    syslog forwarding to 127.0.0.1:LOG_LOCAL_PORT (default: xcespwdog on 1514)
  *  - A dedicated processing thread (EvThread) with a 100 ms repeating timer
  *    that calls process() on every registered ProcObject
  */
@@ -63,17 +62,17 @@ private:
     ArgConfig     argConfig;
     IniConfig*    iniConfig    = nullptr;
     LogManager    logManager;
-    SyslogReader* syslogReader = nullptr;
     EvThread*     procThread   = nullptr;
 
     std::vector<std::unique_ptr<ProcObject>> procObjects;
 
     std::string configFile;
     bool        verbose   = false;
-    int         localPort = 1515;
+    int         localPort = 1514;
 
     /**
-     * @brief  Set up log writers and the local syslog listener from [PROC] config
+     * @brief  Set up log writers from [PROC] config:
+     *         console, optional file, optional local syslog forwarding
      */
     void setupLogging();
 
@@ -98,11 +97,6 @@ private:
      * @brief  Parse a log level string from the INI file (e.g. "Info" → LOG_INFO)
      */
     static LogLevel parseLogLevel(const std::string& s);
-
-    /**
-     * @brief  EvApplication socket callback for the local syslog UDP listener
-     */
-    static void syslogSocketCallback(int fd, void* userData);
 
     /**
      * @brief  EvThread timer callback — dispatches to processingTick()

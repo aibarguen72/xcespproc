@@ -30,7 +30,7 @@ XCespProc::XCespProc(int argc, char* argv[])
     : argConfig(argc, argv)
 {
     argConfig.addOption('c', "config",     "Path to INI configuration file");
-    argConfig.addOption('p', "local-port", "Local UDP syslog listen port (overrides LOG_LOCAL_PORT)");
+    argConfig.addOption('p', "local-port", "Local syslog forwarding port (overrides LOG_LOCAL_PORT)");
     argConfig.addFlag  ('v', "verbose",    "Enable verbose (DEBUG) output on all writers");
     argConfig.addFlag  ('h', "help",       "Show this help message and exit");
 }
@@ -40,11 +40,7 @@ XCespProc::~XCespProc()
     if (procThread) {
         procThread->signal();
     }
-    if (syslogReader && syslogReader->getSocketFd() >= 0) {
-        removeSocket(syslogReader->getSocketFd());
-    }
     endApplication();
-    delete syslogReader;
     delete iniConfig;
 }
 
@@ -96,21 +92,16 @@ bool XCespProc::init()
     logManager.log(LOG_INFO, PRJNAME,
                    std::string(PRJNAME) + " v" + PRJVERSION + " starting");
 
-    // 5. Initialise EvApplication (clears all registered sockets)
+    // 5. Initialise EvApplication
     if (!initApplication()) {
         logManager.log(LOG_FATAL, PRJNAME, "initApplication() failed");
         return false;
     }
 
-    // 6. Re-register syslog listener (must be after initApplication)
-    if (syslogReader && syslogReader->getSocketFd() >= 0) {
-        addSocket(syslogReader->getSocketFd(), &XCespProc::syslogSocketCallback, this);
-    }
-
-    // 7. Load processing objects from [object.N] sections
+    // 6. Load processing objects from [object.N] sections
     loadObjects();
 
-    // 8-10. Create processing thread, register timer, start thread
+    // 7-9. Create processing thread, register timer, start thread
     procThread = addThread();
     procThread->addTimer(100, &XCespProc::processingTimerCallback, this, true);
     procThread->start();
@@ -142,13 +133,11 @@ void XCespProc::setupLogging()
 {
     LogLevel consoleLevel = parseLogLevel(iniConfig->getValue("PROC", "LOG_CONSOLE_LEVEL", "Info"));
     LogLevel fileLevel    = parseLogLevel(iniConfig->getValue("PROC", "LOG_FILE_LEVEL",    "Info"));
-    LogLevel syslogLevel  = parseLogLevel(iniConfig->getValue("PROC", "LOG_SYSLOG_LEVEL",  "Info"));
 
     // -v flag forces DEBUG on all writers
     if (verbose) {
         consoleLevel = LOG_DEBUG;
         fileLevel    = LOG_DEBUG;
-        syslogLevel  = LOG_DEBUG;
     }
 
     // --- Console writer ---
@@ -168,43 +157,23 @@ void XCespProc::setupLogging()
         logManager.addWriter(fileWriter);
     }
 
-    // --- Remote syslog server 1 ---
-    std::string srv1Host = iniConfig->getValue("PROC", "LOG_SYSLOG_SERVER1_HOST", "");
-    if (!srv1Host.empty()) {
-        int port = static_cast<int>(iniConfig->getValueInteger("PROC", "LOG_SYSLOG_SERVER1_PORT", 514));
-        auto* syslog1 = new SyslogWriter(srv1Host, port);
-        syslog1->setMinLevel(syslogLevel);
-        logManager.addWriter(syslog1);
-    }
+    // --- Local syslog forwarding to 127.0.0.1:LOG_LOCAL_PORT (xcespwdog listener) ---
+    // Priority: -p argument > LOG_LOCAL_PORT ini value > built-in default (1514)
+    if (iniConfig->getValueBoolean("PROC", "LOG_LOCAL_ENABLE", true)) {
+        localPort = static_cast<int>(iniConfig->getValueInteger("PROC", "LOG_LOCAL_PORT", 1514));
+        auto portArg = argConfig.getValue('p');
+        if (portArg.has_value()) {
+            try { localPort = std::stoi(portArg.value()); } catch (...) {}
+        }
 
-    // --- Remote syslog server 2 ---
-    std::string srv2Host = iniConfig->getValue("PROC", "LOG_SYSLOG_SERVER2_HOST", "");
-    if (!srv2Host.empty()) {
-        int port = static_cast<int>(iniConfig->getValueInteger("PROC", "LOG_SYSLOG_SERVER2_PORT", 514));
-        auto* syslog2 = new SyslogWriter(srv2Host, port);
-        syslog2->setMinLevel(syslogLevel);
-        logManager.addWriter(syslog2);
-    }
+        LogLevel localLevel = parseLogLevel(iniConfig->getValue("PROC", "LOG_LOCAL_LEVEL", "Info"));
+        if (verbose) localLevel = LOG_DEBUG;
 
-    // --- Local UDP syslog listener ---
-    // Priority: -p argument > LOG_LOCAL_PORT ini value > built-in default (1515)
-    localPort = static_cast<int>(iniConfig->getValueInteger("PROC", "LOG_LOCAL_PORT", 1515));
-    auto portArg = argConfig.getValue('p');
-    if (portArg.has_value()) {
-        try { localPort = std::stoi(portArg.value()); } catch (...) {}
-    }
-
-    syslogReader = new SyslogReader(localPort, nullptr, &logManager);
-    try {
-        syslogReader->openSocket();
-        addSocket(syslogReader->getSocketFd(), &XCespProc::syslogSocketCallback, this);
+        auto* localSyslog = new SyslogWriter("127.0.0.1", localPort);
+        localSyslog->setMinLevel(localLevel);
+        logManager.addWriter(localSyslog);
         logManager.log(LOG_DEBUG, PRJNAME,
-                       "Local syslog listener open on UDP port " + std::to_string(localPort));
-    } catch (const std::exception& e) {
-        logManager.log(LOG_WARNING, PRJNAME,
-                       std::string("Cannot open local syslog listener: ") + e.what());
-        delete syslogReader;
-        syslogReader = nullptr;
+                       "Forwarding logs to 127.0.0.1:" + std::to_string(localPort));
     }
 }
 
@@ -282,12 +251,6 @@ LogLevel XCespProc::parseLogLevel(const std::string& s)
     if (s == "Error"   || s == "error"   || s == "ERROR")    return LOG_ERROR;
     if (s == "Fatal"   || s == "fatal"   || s == "FATAL")    return LOG_FATAL;
     return LOG_INFO;
-}
-
-void XCespProc::syslogSocketCallback(int fd, void* userData)
-{
-    (void)fd;
-    static_cast<XCespProc*>(userData)->syslogReader->receiveAndProcess();
 }
 
 void XCespProc::processingTimerCallback(int id, void* userData)
