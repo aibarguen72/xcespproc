@@ -89,6 +89,11 @@ private:
     void printBanner() const;
 
     /**
+     * @brief  Called from the main thread timer every 10 s — heartbeat log
+     */
+    void mainTick();
+
+    /**
      * @brief  Called from the processing thread timer every 100 ms
      */
     void processingTick();
@@ -97,6 +102,11 @@ private:
      * @brief  Parse a log level string from the INI file (e.g. "Info" → LOG_INFO)
      */
     static LogLevel parseLogLevel(const std::string& s);
+
+    /**
+     * @brief  Main thread 10 s timer callback — dispatches to mainTick()
+     */
+    static void mainTimerCallback(int id, void* userData);
 
     /**
      * @brief  EvThread timer callback — dispatches to processingTick()

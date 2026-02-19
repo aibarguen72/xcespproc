@@ -98,10 +98,13 @@ bool XCespProc::init()
         return false;
     }
 
-    // 6. Load processing objects from [object.N] sections
+    // 6. Main thread 10 s heartbeat timer
+    addTimer(10000, &XCespProc::mainTimerCallback, this, true);
+
+    // 7. Load processing objects from [object.N] sections
     loadObjects();
 
-    // 7-9. Create processing thread, register timer, start thread
+    // 8-10. Create processing thread, register timer, start thread
     procThread = addThread();
     procThread->addTimer(100, &XCespProc::processingTimerCallback, this, true);
     procThread->start();
@@ -216,8 +219,13 @@ void XCespProc::loadObjects()
 }
 
 // ---------------------------------------------------------------------------
-// processingTick
+// mainTick / processingTick
 // ---------------------------------------------------------------------------
+
+void XCespProc::mainTick()
+{
+    logManager.log(LOG_DEBUG, PRJNAME, "heartbeat");
+}
 
 void XCespProc::processingTick()
 {
@@ -251,6 +259,12 @@ LogLevel XCespProc::parseLogLevel(const std::string& s)
     if (s == "Error"   || s == "error"   || s == "ERROR")    return LOG_ERROR;
     if (s == "Fatal"   || s == "fatal"   || s == "FATAL")    return LOG_FATAL;
     return LOG_INFO;
+}
+
+void XCespProc::mainTimerCallback(int id, void* userData)
+{
+    (void)id;
+    static_cast<XCespProc*>(userData)->mainTick();
 }
 
 void XCespProc::processingTimerCallback(int id, void* userData)
