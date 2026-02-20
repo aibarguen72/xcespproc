@@ -71,6 +71,7 @@ private:
     int         procId    = 1;
     std::string logTag;           ///< e.g. "xcespproc-1" — used as the log source tag
     int         localPort = 1514;
+    pid_t       originalPpid_ = 0; ///< PPID recorded at startup; 0 = no parent-loss check
 
     /**
      * @brief  Set up log writers from [PROC] config:

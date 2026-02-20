@@ -52,17 +52,19 @@ void UdpTesterPObj::process()
 {
     // IDLE: attempt to open socket and transition to ACTIVE
     if (status_.objStatus == ObjStatus::IDLE) {
+        if (log_ != nullptr)
+            log_->log(LOG_INFO, logTag_, "Object IDLE. Trying to open socket");
         if (openSocket()) {
             status_.objStatus = ObjStatus::ACTIVE;
             status            = ObjStatus::ACTIVE;
 
             // Register event-driven send timer and recv socket callback
             if (loop_ != nullptr) {
-                sendTimerId_ = loop_->addTimer(
+                /*sendTimerId_ = loop_->addTimer(
                     config_.intervalMs,
                     &UdpTesterPObj::sendTimerCallback,
                     this,
-                    true);
+                    true);*/
                 loop_->addSocket(
                     status_.socketFd,
                     &UdpTesterPObj::recvCallback,

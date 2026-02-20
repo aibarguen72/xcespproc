@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <unistd.h>
 
 #ifndef PRJNAME
 #define PRJNAME "xcespproc"
@@ -32,7 +33,7 @@ XCespProc::XCespProc(int argc, char* argv[])
     argConfig.addOption('c', "config",          "Path to INI configuration file");
     argConfig.addOption('i', "id",              "Process instance ID shown in banner and log tag (default 1)");
     argConfig.addOption('p', "local-port",      "Local syslog forwarding port (overrides LOG_LOCAL_PORT)");
-    argConfig.addOption('s', "signal-interval", "Seconds between SIGUSR1 heartbeats to parent (default 20)");
+    argConfig.addOption('s', "signal-interval", "Seconds between SIGUSR1 heartbeats to parent (default 0-disabled)");
     argConfig.addFlag  ('v', "verbose",         "Enable verbose (DEBUG) output on all writers");
     argConfig.addFlag  ('h', "help",            "Show this help message and exit");
 }
@@ -103,17 +104,19 @@ bool XCespProc::init()
         return false;
     }
 
-    // 6. SIGUSR1 heartbeat to parent process
-    int signalIntervalSec = 20;
+    // 6. SIGUSR1 heartbeat to parent process. Disabled by default
+    int signalIntervalSec = 0; 
     auto sArg = argConfig.getValue('s');
     if (sArg.has_value()) {
         try { signalIntervalSec = std::stoi(sArg.value()); } catch (...) {}
     }
     if (signalIntervalSec > 0) {
+        originalPpid_ = getppid();
         setParentHeartbeat(signalIntervalSec * 1000);
         logManager.log(LOG_DEBUG, logTag,
                        "SIGUSR1 heartbeat to parent every " +
-                       std::to_string(signalIntervalSec) + " s");
+                       std::to_string(signalIntervalSec) + " s"
+                       + " (parent PID=" + std::to_string(originalPpid_) + ")");
     }
 
     // 7. Main thread 10 s heartbeat timer
@@ -250,6 +253,15 @@ void XCespProc::loadObjects()
 void XCespProc::mainTick()
 {
     logManager.log(LOG_DEBUG, logTag, "heartbeat");
+
+    // If parent heartbeat is enabled, check that the original parent is still alive.
+    // getppid() returns 1 (init/systemd) when the original parent has died.
+    if (originalPpid_ != 0 && getppid() != originalPpid_) {
+        logManager.log(LOG_FATAL, logTag,
+                       "Parent process changed (was PID=" + std::to_string(originalPpid_) +
+                       ", now PPID=" + std::to_string(getppid()) + ") — exiting");
+        stopLoop();
+    }
 }
 
 void XCespProc::processingTick()
