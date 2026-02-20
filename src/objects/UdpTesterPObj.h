@@ -10,6 +10,7 @@
 
 #include "ProcObject.h"
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -78,14 +79,40 @@ public:
     // --- Virtual accessors (const void* per base contract) ---
 
     const void* getConfig() const override { return &config_; }
-    const void* getStatus() const override { return &status_; }
-    const void* getStats()  const override { return &stats_;  }
+
+    /**
+     * Returns the most recently published snapshot of UdpTesterStatus.
+     * Safe to call from any thread — no lock required.
+     */
+    const void* getStatus() const override {
+        return &statusSnap_[snapIdx_.load(std::memory_order_acquire)];
+    }
+
+    /**
+     * Returns the most recently published snapshot of UdpTesterStats.
+     * Safe to call from any thread — no lock required.
+     */
+    const void* getStats() const override {
+        return &statsSnap_[snapIdx_.load(std::memory_order_acquire)];
+    }
+
+    void syncSnapshot() override;
+    void clearStats()   override;
 
 private:
+    // --- Primary data (written exclusively by the processing thread) ---
     UdpTesterConfig      config_;
-    UdpTesterStatus      status_;
-    UdpTesterStats       stats_;
-    UdpTesterLocalStatus local_;        ///< internal state, not exposed externally
+    UdpTesterStatus      status_;           ///< current status  — process thread only
+    UdpTesterStats       stats_;            ///< current counters — process thread only
+    UdpTesterLocalStatus local_;            ///< internal socket state — process thread only
+
+    // --- Triple-buffer snapshot (lock-free, published via syncSnapshot()) ---
+    // Two read buffers; snapIdx_ is the index of the latest valid one.
+    // Process thread always writes to (snapIdx_^1), then flips snapIdx_ with release.
+    // Main thread reads from snapIdx_ with acquire — no mutex needed.
+    UdpTesterStatus      statusSnap_[2]{};  ///< read buffers for main-thread consumers
+    UdpTesterStats       statsSnap_[2]{};   ///< read buffers for main-thread consumers
+    std::atomic<int>     snapIdx_{0};       ///< index of the valid (latest) snapshot
 
     int sendTimerId_ = -1;             ///< timer ID from loop_->addTimer(); -1 = inactive
 

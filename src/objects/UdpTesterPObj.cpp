@@ -84,6 +84,9 @@ void UdpTesterPObj::process()
         }
     }
     // ACTIVE / ERROR: no-op — event callbacks drive sending and receiving
+
+    // Publish a fresh snapshot so the main thread sees up-to-date data without locking
+    syncSnapshot();
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +166,27 @@ void UdpTesterPObj::onRecv()
         if (log_ != nullptr)
             log_->vlog(LOG_DEBUG, logTag_, "received %zd bytes", n);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Triple-buffer snapshot
+// ---------------------------------------------------------------------------
+
+void UdpTesterPObj::syncSnapshot()
+{
+    // Write to the buffer that the main thread is NOT currently reading,
+    // then atomically make it the active one (release → acquire pairing in readers).
+    int next = snapIdx_.load(std::memory_order_relaxed) ^ 1;
+    statusSnap_[next] = status_;
+    statsSnap_[next]  = stats_;
+    snapIdx_.store(next, std::memory_order_release);
+}
+
+void UdpTesterPObj::clearStats()
+{
+    // Called from the processing thread only — no locking needed.
+    // The next syncSnapshot() will publish the zeroed counters.
+    stats_ = UdpTesterStats{};
 }
 
 // ---------------------------------------------------------------------------

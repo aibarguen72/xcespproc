@@ -87,6 +87,28 @@ public:
      */
     virtual const void* getStats()  const { return nullptr; }
 
+    /**
+     * @brief  Reset all accumulated statistics counters to zero.
+     *
+     * Must be called from the processing thread only — the primary stats struct
+     * is process-thread-owned so no locking is needed.  The next syncSnapshot()
+     * call will publish the zeroed counters to the main-thread snapshot.
+     */
+    virtual void clearStats() {}
+
+    /**
+     * @brief  Copy primary status/stats to the next snapshot buffer and atomically
+     *         publish it for the main thread.
+     *
+     * Derived classes override this to implement lock-free triple-buffer
+     * synchronisation: one primary (process-thread-owned) + two read buffers,
+     * indexed by an atomic int that is flipped after each copy.
+     *
+     * Called at the end of process() so the main thread always sees a freshly
+     * updated, self-consistent snapshot without any mutex.
+     */
+    virtual void syncSnapshot() {}
+
     // --- Base status accessor ---
 
     /**

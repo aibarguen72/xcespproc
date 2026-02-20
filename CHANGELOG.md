@@ -1,5 +1,12 @@
 # Changelog - xcespproc
 
+## 0.0.9
+
+- Triple-buffer lock-free status/stats snapshot: each `ProcObject` carries a primary struct (process-thread-owned) and two read buffers for the main thread; `syncSnapshot()` copies primary → inactive buffer then atomically flips the index (`std::atomic<int>` with release/acquire ordering); `getStatus()`/`getStats()` return the latest snapshot — no mutex required
+- `ProcObject`: add `virtual void syncSnapshot() {}` and `virtual void clearStats() {}` — default no-ops, overridden by concrete subclasses
+- `UdpTesterPObj`: implement `syncSnapshot()` (flips `snapIdx_` double-buffer) and `clearStats()` (resets `stats_` to zero-initialised `UdpTesterStats{}`); `process()` calls `syncSnapshot()` as its last statement
+- `UdpTesterPObj`: `getStatus()` and `getStats()` now return from the published snapshot, making them safe to call from the main thread at any time
+
 ## 0.0.8
 
 - Scalable scheduling: three new [PROC] INI keys — `PROC_HB_INTERVAL` (ms), `PROC_MAX_OBJECTS_PER_HB`, `PROC_HB_INTERVAL_MULT` — drive rate-limited round-robin processing of up to 10 000 objects
