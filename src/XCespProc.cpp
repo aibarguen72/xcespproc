@@ -122,15 +122,22 @@ bool XCespProc::init()
     // 8. Load processing objects from [object.N] sections
     loadObjects();
 
-    // 9-11. Create processing thread, register timer, start thread
+    // 9. Create processing thread (must precede init() so getLoop() is valid)
     procThread = addThread();
-    procThread->addTimer(100, &XCespProc::processingTimerCallback, this, true);
+
+    // 10. Supply each object with its event loop, log manager, and app tag
+    for (auto& obj : procObjects) {
+        obj->init(procThread->getLoop(), logManager, logTag);
+    }
+
+    // 11. Register processing tick timer and start thread
+    procThread->addTimer(5000, &XCespProc::processingTimerCallback, this, true);
     procThread->start();
 
     logManager.log(LOG_INFO, logTag,
                    "Processing thread started (" +
                    std::to_string(procObjects.size()) +
-                   " object(s), 100 ms tick)");
+                   " object(s), 5 s tick)");
 
     return true;
 }

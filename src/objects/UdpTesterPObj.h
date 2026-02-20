@@ -10,24 +10,24 @@
 
 #include "ProcObject.h"
 
-#include <chrono>
 #include <cstdint>
 #include <string>
+#include <netinet/in.h>
 
 /**
  * @brief  Configuration parameters for UdpTesterPObj, loaded from an INI section
  */
 struct UdpTesterConfig {
-    int         intervalMs  = 1000;       ///< INTERVAL_MS: ms between transmitted packets
-    int         packetSize  = 64;         ///< PACKET_SIZE: payload size in bytes
+    int         intervalMs  = 1000;        ///< INTERVAL_MS: ms between transmitted packets
+    int         packetSize  = 64;          ///< PACKET_SIZE: payload size in bytes
     std::string srcIp       = "127.0.0.1"; ///< SRC_IP: local bind address
-    int         srcPort     = 0;          ///< SRC_PORT: local bind port (0 = any)
+    int         srcPort     = 0;           ///< SRC_PORT: local bind port (0 = any)
     std::string dstIp       = "127.0.0.1"; ///< DST_IP: destination address
-    int         dstPort     = 9999;       ///< DST_PORT: destination port
+    int         dstPort     = 9999;        ///< DST_PORT: destination port
 };
 
 /**
- * @brief  Runtime status for UdpTesterPObj
+ * @brief  Public runtime status for UdpTesterPObj
  */
 struct UdpTesterStatus {
     ProcObject::ObjStatus objStatus = ProcObject::ObjStatus::IDLE;
@@ -43,14 +43,24 @@ struct UdpTesterStats {
 };
 
 /**
+ * @brief  Internal processing state — not exposed via getStatus().
+ *
+ * Holds data needed during processing that is not relevant to external observers.
+ */
+struct UdpTesterLocalStatus {
+    struct sockaddr_in dst{};  ///< destination address, pre-computed when socket opens
+};
+
+/**
  * @brief  Processing object that sends UDP packets at a configurable interval.
  *
  * State machine:
- *   IDLE   → openSocket() [SO_REUSEADDR + bind srcIp:srcPort]
- *              success → ACTIVE, record lastSendTime_
- *              failure → ERROR
- *   ACTIVE → if elapsed >= intervalMs: sendto(dstIp:dstPort), recvfrom(MSG_DONTWAIT)
- *   ERROR  → no-op
+ *   IDLE   -> process() calls openSocket() [SO_REUSEADDR + bind srcIp:srcPort]
+ *              success -> ACTIVE: registers send timer and recv socket callback
+ *              failure -> ERROR
+ *   ACTIVE -> send timer fires -> onSendTimer() sends to dstIp:dstPort
+ *             socket readable  -> onRecv() reads arriving packets
+ *   ERROR  -> process() is a no-op
  */
 class UdpTesterPObj : public ProcObject {
 public:
@@ -58,25 +68,32 @@ public:
 
     // --- ProcObject interface ---
 
-    const std::string& getName()   const override;
+    void init(EvApplication& loop, LogManager& mgr,
+              const std::string& appTag) override;
     bool loadConfig(IniConfig& ini, const std::string& section) override;
     void process() override;
 
-    // --- Accessors for inspection / test ---
+    // --- Virtual accessors (const void* per base contract) ---
 
-    const UdpTesterConfig& getConfig() const;
-    const UdpTesterStatus& getStatus() const;
-    const UdpTesterStats&  getStats()  const;
+    const void* getConfig() const override { return &config_; }
+    const void* getStatus() const override { return &status_; }
+    const void* getStats()  const override { return &stats_;  }
 
 private:
-    std::string     name_;
-    UdpTesterConfig config_;
-    UdpTesterStatus status_;
-    UdpTesterStats  stats_;
-    std::chrono::steady_clock::time_point lastSendTime_{};
+    UdpTesterConfig      config_;
+    UdpTesterStatus      status_;
+    UdpTesterStats       stats_;
+    UdpTesterLocalStatus local_;        ///< internal state, not exposed externally
+
+    int sendTimerId_ = -1;             ///< timer ID from loop_->addTimer(); -1 = inactive
 
     bool openSocket();
     void closeSocket();
+    void onSendTimer();
+    void onRecv();
+
+    static void sendTimerCallback(int id, void* userData);
+    static void recvCallback(int fd, void* userData);
 };
 
 #endif // UDPTESTERPOBJ_H

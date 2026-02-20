@@ -14,8 +14,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <thread>
-#include <chrono>
 #include <unistd.h>
 
 // ---------------------------------------------------------------------------
@@ -54,6 +52,25 @@ static std::string writeTempIni(const std::string& content)
 }
 
 // ---------------------------------------------------------------------------
+// Helper: typed accessor casts
+// ---------------------------------------------------------------------------
+
+static const UdpTesterConfig& cfg(const UdpTesterPObj& obj)
+{
+    return *static_cast<const UdpTesterConfig*>(obj.getConfig());
+}
+
+static const UdpTesterStatus& sts(const UdpTesterPObj& obj)
+{
+    return *static_cast<const UdpTesterStatus*>(obj.getStatus());
+}
+
+static const UdpTesterStats& sta(const UdpTesterPObj& obj)
+{
+    return *static_cast<const UdpTesterStats*>(obj.getStats());
+}
+
+// ---------------------------------------------------------------------------
 // Test 1: loadConfig() populates all UdpTesterConfig fields correctly
 // ---------------------------------------------------------------------------
 
@@ -72,20 +89,20 @@ static void testLoadConfig()
         "DST_PORT=15101\n"
     );
 
-    IniConfig cfg(ini);
-    check(cfg.isLoaded(), "INI file loaded");
+    IniConfig icfg(ini);
+    check(icfg.isLoaded(), "INI file loaded");
 
     UdpTesterPObj obj;
-    bool ok = obj.loadConfig(cfg, "object.1");
+    bool ok = obj.loadConfig(icfg, "object.1");
     check(ok, "loadConfig() returns true");
 
-    check(obj.getName()          == "object.1", "name == \"object.1\"");
-    check(obj.getConfig().intervalMs  == 500,   "intervalMs == 500");
-    check(obj.getConfig().packetSize  == 128,   "packetSize == 128");
-    check(obj.getConfig().srcIp       == "127.0.0.1", "srcIp == 127.0.0.1");
-    check(obj.getConfig().srcPort     == 15100, "srcPort == 15100");
-    check(obj.getConfig().dstIp       == "127.0.0.1", "dstIp == 127.0.0.1");
-    check(obj.getConfig().dstPort     == 15101, "dstPort == 15101");
+    check(obj.getName()         == "object.1", "name == \"object.1\"");
+    check(cfg(obj).intervalMs  == 500,         "intervalMs == 500");
+    check(cfg(obj).packetSize  == 128,         "packetSize == 128");
+    check(cfg(obj).srcIp       == "127.0.0.1", "srcIp == 127.0.0.1");
+    check(cfg(obj).srcPort     == 15100,       "srcPort == 15100");
+    check(cfg(obj).dstIp       == "127.0.0.1", "dstIp == 127.0.0.1");
+    check(cfg(obj).dstPort     == 15101,       "dstPort == 15101");
 
     std::remove(ini.c_str());
 }
@@ -98,7 +115,7 @@ static void testFirstProcessActivates()
 {
     std::cout << "\n[Test 2] First process() IDLE -> ACTIVE\n";
 
-    // SRC_PORT=0 → kernel assigns any available port; DST_PORT need not be bound
+    // SRC_PORT=0 -> kernel assigns any available port; DST_PORT need not be bound
     std::string ini = writeTempIni(
         "[object.1]\n"
         "TYPE=UdpTester\n"
@@ -110,30 +127,30 @@ static void testFirstProcessActivates()
         "DST_PORT=15200\n"
     );
 
-    IniConfig cfg(ini);
+    IniConfig icfg(ini);
     UdpTesterPObj obj;
-    obj.loadConfig(cfg, "object.1");
+    obj.loadConfig(icfg, "object.1");
 
-    check(obj.getStatus().objStatus == ProcObject::ObjStatus::IDLE,
+    check(sts(obj).objStatus == ProcObject::ObjStatus::IDLE,
           "initial status is IDLE");
 
-    obj.process();  // IDLE → ACTIVE
+    obj.process();  // IDLE -> ACTIVE
 
-    check(obj.getStatus().objStatus == ProcObject::ObjStatus::ACTIVE,
+    check(sts(obj).objStatus == ProcObject::ObjStatus::ACTIVE,
           "status is ACTIVE after first process()");
-    check(obj.getStatus().socketFd >= 0,
+    check(sts(obj).socketFd >= 0,
           "socket is open (fd >= 0)");
 
     std::remove(ini.c_str());
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Second process() within a long interval → no packet sent
+// Test 3: process() when ACTIVE is a no-op (event-driven model: no send)
 // ---------------------------------------------------------------------------
 
-static void testNoSendWithinInterval()
+static void testNoSendFromProcess()
 {
-    std::cout << "\n[Test 3] Second process() within interval -> no packet sent\n";
+    std::cout << "\n[Test 3] process() when ACTIVE is a no-op (event-driven)\n";
 
     std::string ini = writeTempIni(
         "[object.1]\n"
@@ -146,28 +163,28 @@ static void testNoSendWithinInterval()
         "DST_PORT=15300\n"
     );
 
-    IniConfig cfg(ini);
+    IniConfig icfg(ini);
     UdpTesterPObj obj;
-    obj.loadConfig(cfg, "object.1");
+    obj.loadConfig(icfg, "object.1");
 
-    obj.process();  // IDLE → ACTIVE, records lastSendTime_
-    check(obj.getStatus().objStatus == ProcObject::ObjStatus::ACTIVE,
+    obj.process();  // IDLE -> ACTIVE
+    check(sts(obj).objStatus == ProcObject::ObjStatus::ACTIVE,
           "ACTIVE after first process()");
 
-    obj.process();  // elapsed << 60000 ms → no send
-    check(obj.getStats().packetsSent == 0,
-          "no packet sent within interval (packetsSent == 0)");
+    obj.process();  // ACTIVE -> no-op; no event loop running -> no send
+    check(sta(obj).packetsSent == 0,
+          "no packet sent from process() — sending is event-driven");
 
     std::remove(ini.c_str());
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: intervalMs=0 → immediate send on second process() call
+// Test 4: Sending is event-driven; process() never increments packetsSent
 // ---------------------------------------------------------------------------
 
-static void testImmediateSendZeroInterval()
+static void testProcessNeverSends()
 {
-    std::cout << "\n[Test 4] intervalMs=0 -> immediate send on second process()\n";
+    std::cout << "\n[Test 4] process() never sends — event loop drives packetsSent\n";
 
     std::string ini = writeTempIni(
         "[object.1]\n"
@@ -180,19 +197,19 @@ static void testImmediateSendZeroInterval()
         "DST_PORT=15400\n"
     );
 
-    IniConfig cfg(ini);
+    IniConfig icfg(ini);
     UdpTesterPObj obj;
-    obj.loadConfig(cfg, "object.1");
+    obj.loadConfig(icfg, "object.1");
 
-    obj.process();  // IDLE → ACTIVE
-    check(obj.getStatus().objStatus == ProcObject::ObjStatus::ACTIVE,
+    obj.process();  // IDLE -> ACTIVE
+    check(sts(obj).objStatus == ProcObject::ObjStatus::ACTIVE,
           "ACTIVE after first process()");
-    check(obj.getStats().packetsSent == 0,
-          "no packet sent on IDLE->ACTIVE transition");
+    check(sta(obj).packetsSent == 0,
+          "packetsSent == 0 on IDLE->ACTIVE transition");
 
-    obj.process();  // elapsed (0 us) >= 0 ms → send immediately
-    check(obj.getStats().packetsSent == 1,
-          "one packet sent on second process() with intervalMs=0");
+    obj.process();  // ACTIVE -> no-op (no event loop, timer never fires)
+    check(sta(obj).packetsSent == 0,
+          "packetsSent == 0 after second process() — send is event-driven");
 
     std::remove(ini.c_str());
 }
@@ -207,8 +224,8 @@ int main()
 
     testLoadConfig();
     testFirstProcessActivates();
-    testNoSendWithinInterval();
-    testImmediateSendZeroInterval();
+    testNoSendFromProcess();
+    testProcessNeverSends();
 
     std::cout << "\n=== Results: " << passCount << " passed, "
               << failCount << " failed ===\n";
