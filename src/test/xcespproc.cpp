@@ -6,6 +6,7 @@
  */
 
 #include "UdpTesterPObj.h"
+#include "PktBertPObj.h"
 #include "IniConfig.h"
 
 #include <cassert>
@@ -215,6 +216,115 @@ static void testProcessNeverSends()
 }
 
 // ---------------------------------------------------------------------------
+// PktBertPObj typed accessor helpers
+// ---------------------------------------------------------------------------
+
+static const PktBertConfig& bCfg(const PktBertPObj& obj)
+{
+    return *static_cast<const PktBertConfig*>(obj.getConfig());
+}
+
+static const PktBertStatus& bSts(const PktBertPObj& obj)
+{
+    return *static_cast<const PktBertStatus*>(obj.getStatus());
+}
+
+static const PktBertStats& bSta(const PktBertPObj& obj)
+{
+    return *static_cast<const PktBertStats*>(obj.getStats());
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: loadConfig() populates all PktBertConfig fields correctly
+// ---------------------------------------------------------------------------
+
+static void testPktBertLoadConfig()
+{
+    std::cout << "\n[Test 5] PktBert loadConfig() populates all fields\n";
+
+    std::string ini = writeTempIni(
+        "[object.1]\n"
+        "TYPE=PktBert\n"
+        "PACKET_SIZE=128\n"
+        "PRBS_TYPE=11\n"
+        "PACKET_LOSS_PPM=500\n"
+    );
+
+    IniConfig icfg(ini);
+    check(icfg.isLoaded(), "INI file loaded");
+
+    PktBertPObj obj;
+    bool ok = obj.loadConfig(icfg, "object.1");
+    check(ok,                                     "loadConfig() returns true");
+
+    check(obj.getName()            == "object.1", "name == \"object.1\"");
+    check(bCfg(obj).packetSize    == 128,         "packetSize == 128");
+    check(bCfg(obj).prbsType      == 11,          "prbsType == 11");
+    check(bCfg(obj).packetLossPPM == 500u,        "packetLossPPM == 500");
+
+    std::remove(ini.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: First process() IDLE -> ACTIVE; syncOk starts false
+// ---------------------------------------------------------------------------
+
+static void testPktBertFirstProcessActivates()
+{
+    std::cout << "\n[Test 6] PktBert first process() IDLE -> ACTIVE\n";
+
+    std::string ini = writeTempIni(
+        "[object.1]\n"
+        "TYPE=PktBert\n"
+        "PACKET_SIZE=64\n"
+        "PRBS_TYPE=7\n"
+        "PACKET_LOSS_PPM=0\n"
+    );
+
+    IniConfig icfg(ini);
+    PktBertPObj obj;
+    obj.loadConfig(icfg, "object.1");
+
+    check(bSts(obj).objStatus == ProcObject::ObjStatus::IDLE,
+          "initial status is IDLE");
+    check(!bSts(obj).syncOk, "initial syncOk is false");
+
+    obj.process();  // IDLE → ACTIVE (no event loop — timer not registered but status changes)
+
+    check(bSts(obj).objStatus == ProcObject::ObjStatus::ACTIVE ||
+          bSts(obj).objStatus == ProcObject::ObjStatus::ERROR,
+          "status is ACTIVE or ERROR after first process() (no event loop)");
+    check(bSta(obj).goodPackets == 0, "goodPackets == 0 (timer never fired)");
+    check(bSta(obj).badPackets  == 0, "badPackets  == 0 (timer never fired)");
+
+    std::remove(ini.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Default config values applied when keys are absent
+// ---------------------------------------------------------------------------
+
+static void testPktBertDefaultConfig()
+{
+    std::cout << "\n[Test 7] PktBert default config values\n";
+
+    std::string ini = writeTempIni(
+        "[object.1]\n"
+        "TYPE=PktBert\n"
+    );
+
+    IniConfig icfg(ini);
+    PktBertPObj obj;
+    bool ok = obj.loadConfig(icfg, "object.1");
+    check(ok,                                     "loadConfig() returns true with no keys");
+    check(bCfg(obj).packetSize    == 64,          "default packetSize == 64");
+    check(bCfg(obj).prbsType      == 7,           "default prbsType == 7");
+    check(bCfg(obj).packetLossPPM == 0u,          "default packetLossPPM == 0");
+
+    std::remove(ini.c_str());
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -226,6 +336,10 @@ int main()
     testFirstProcessActivates();
     testNoSendFromProcess();
     testProcessNeverSends();
+
+    testPktBertLoadConfig();
+    testPktBertFirstProcessActivates();
+    testPktBertDefaultConfig();
 
     std::cout << "\n=== Results: " << passCount << " passed, "
               << failCount << " failed ===\n";

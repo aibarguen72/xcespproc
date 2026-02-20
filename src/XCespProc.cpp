@@ -11,6 +11,7 @@
 #include "FileWriter.h"
 #include "SyslogWriter.h"
 #include "UdpTesterPObj.h"
+#include "PktBertPObj.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -249,6 +250,8 @@ void XCespProc::loadObjectsBatch()
 
         if (type == "UdpTester") {
             obj = std::make_unique<UdpTesterPObj>();
+        } else if (type == "PktBert") {
+            obj = std::make_unique<PktBertPObj>();
         } else {
             logManager.log(LOG_WARNING, logTag,
                            section + ": unknown TYPE \"" + type + "\" — skipping");

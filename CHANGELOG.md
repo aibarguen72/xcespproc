@@ -1,5 +1,16 @@
 # Changelog - xcespproc
 
+## 0.0.10
+
+- Add `PktBertPObj` — loopback PRBS packet BERT processing object
+- Configuration: `PACKET_SIZE` (bytes, default 64), `PRBS_TYPE` (7/11/15, default 7), `PACKET_LOSS_PPM` (0–1 000 000, default 0)
+- Status: `syncOk` (true when last received packet matched PRBS sequence)
+- Stats: `goodPackets` / `badPackets` counters
+- PRBS generator: Fibonacci left-shift LFSR with ITU-T taps for degree 7, 11, and 15; lock-up state 0 forced to 1
+- Drop simulation: `std::mt19937` RNG; packet dropped when `rng() % 1000000 < PACKET_LOSS_PPM`; receiver not called on drop, causing `rxLfsrState` to fall behind; next non-dropped packet detected as bad then LFSR re-synced
+- 1-second repeating timer drives TX+RX; `syncSnapshot()` called from `process()` publishes status/stats to main-thread snapshot
+- Factory: `TYPE=PktBert` recognised in `loadObjectsBatch()`; sample `[object.3]` added to `test/xcespproc.ini`
+
 ## 0.0.9
 
 - Triple-buffer lock-free status/stats snapshot: each `ProcObject` carries a primary struct (process-thread-owned) and two read buffers for the main thread; `syncSnapshot()` copies primary → inactive buffer then atomically flips the index (`std::atomic<int>` with release/acquire ordering); `getStatus()`/`getStats()` return the latest snapshot — no mutex required
