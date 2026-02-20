@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <netinet/in.h>
 
 /**
@@ -31,7 +32,6 @@ struct UdpTesterConfig {
  */
 struct UdpTesterStatus {
     ProcObject::ObjStatus objStatus = ProcObject::ObjStatus::IDLE;
-    int                   socketFd  = -1;
 };
 
 /**
@@ -48,7 +48,9 @@ struct UdpTesterStats {
  * Holds data needed during processing that is not relevant to external observers.
  */
 struct UdpTesterLocalStatus {
-    struct sockaddr_in dst{};  ///< destination address, pre-computed when socket opens
+    struct sockaddr_in    dst{};         ///< destination address, pre-computed when socket opens
+    int                   socketFd = -1; ///< bound UDP socket fd; -1 when closed
+    std::vector<uint8_t>  payload;       ///< send buffer, sized once in loadConfig()
 };
 
 /**

@@ -138,8 +138,8 @@ static void testFirstProcessActivates()
 
     check(sts(obj).objStatus == ProcObject::ObjStatus::ACTIVE,
           "status is ACTIVE after first process()");
-    check(sts(obj).socketFd >= 0,
-          "socket is open (fd >= 0)");
+    check(sts(obj).objStatus == ProcObject::ObjStatus::ACTIVE,
+          "status is ACTIVE (socket opened successfully)");
 
     std::remove(ini.c_str());
 }

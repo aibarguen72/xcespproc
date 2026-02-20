@@ -45,6 +45,8 @@ bool UdpTesterPObj::loadConfig(IniConfig& ini, const std::string& section)
     config_.dstIp      = ini.getValue(section, "DST_IP", std::string("127.0.0.1"));
     config_.dstPort    = static_cast<int>(ini.getValueInteger(section, "DST_PORT",      9999));
 
+    local_.payload.assign(static_cast<size_t>(config_.packetSize), 0);
+
     return true;
 }
 
@@ -60,13 +62,13 @@ void UdpTesterPObj::process()
 
             // Register event-driven send timer and recv socket callback
             if (loop_ != nullptr) {
-                /*sendTimerId_ = loop_->addTimer(
+                sendTimerId_ = loop_->addTimer(
                     config_.intervalMs,
                     &UdpTesterPObj::sendTimerCallback,
                     this,
-                    true);*/
+                    true);
                 loop_->addSocket(
-                    status_.socketFd,
+                    local_.socketFd,
                     &UdpTesterPObj::recvCallback,
                     this);
             }
@@ -106,7 +108,7 @@ bool UdpTesterPObj::openSocket()
         return false;
     }
 
-    status_.socketFd = fd;
+    local_.socketFd = fd;
 
     // Pre-compute destination address into local_ (used by every send, avoids repetition)
     local_.dst.sin_family = AF_INET;
@@ -122,21 +124,20 @@ void UdpTesterPObj::closeSocket()
         loop_->removeTimer(sendTimerId_);
         sendTimerId_ = -1;
     }
-    if (status_.socketFd >= 0) {
+    if (local_.socketFd >= 0) {
         if (loop_ != nullptr)
-            loop_->removeSocket(status_.socketFd);
-        ::close(status_.socketFd);
-        status_.socketFd = -1;
+            loop_->removeSocket(local_.socketFd);
+        ::close(local_.socketFd);
+        local_.socketFd = -1;
     }
 }
 
 void UdpTesterPObj::onSendTimer()
 {
-    if (status_.socketFd < 0) return;
+    if (local_.socketFd < 0) return;
 
-    std::vector<uint8_t> payload(static_cast<size_t>(config_.packetSize), 0);
-    ssize_t sent = sendto(status_.socketFd,
-                          payload.data(), payload.size(),
+    ssize_t sent = sendto(local_.socketFd,
+                          local_.payload.data(), local_.payload.size(),
                           0,
                           reinterpret_cast<const struct sockaddr*>(&local_.dst),
                           sizeof(local_.dst));
@@ -153,7 +154,7 @@ void UdpTesterPObj::onSendTimer()
 void UdpTesterPObj::onRecv()
 {
     uint8_t buf[65536];
-    ssize_t n = recvfrom(status_.socketFd,
+    ssize_t n = recvfrom(local_.socketFd,
                          buf, sizeof(buf),
                          MSG_DONTWAIT,
                          nullptr, nullptr);

@@ -13,8 +13,11 @@
 #include "UdpTesterPObj.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <mutex>
 #include <unistd.h>
+#include <vector>
 
 #ifndef PRJNAME
 #define PRJNAME "xcespproc"
@@ -105,7 +108,7 @@ bool XCespProc::init()
     }
 
     // 6. SIGUSR1 heartbeat to parent process. Disabled by default
-    int signalIntervalSec = 0; 
+    int signalIntervalSec = 0;
     auto sArg = argConfig.getValue('s');
     if (sArg.has_value()) {
         try { signalIntervalSec = std::stoi(sArg.value()); } catch (...) {}
@@ -119,28 +122,37 @@ bool XCespProc::init()
                        + " (parent PID=" + std::to_string(originalPpid_) + ")");
     }
 
-    // 7. Main thread 10 s heartbeat timer
+    // 7. Read scheduler config from [PROC]
+    hbIntervalMs_   = static_cast<int>(iniConfig->getValueInteger("PROC", "PROC_HB_INTERVAL",        100));
+    maxObjsPerHb_   = static_cast<int>(iniConfig->getValueInteger("PROC", "PROC_MAX_OBJECTS_PER_HB",  100));
+    hbIntervalMult_ = static_cast<int>(iniConfig->getValueInteger("PROC", "PROC_HB_INTERVAL_MULT",    100));
+    if (hbIntervalMs_   < 1) hbIntervalMs_   = 1;
+    if (maxObjsPerHb_   < 1) maxObjsPerHb_   = 1;
+    if (hbIntervalMult_ < 1) hbIntervalMult_ = 1;
+    logManager.log(LOG_DEBUG, logTag,
+                   "Scheduler: HB=" + std::to_string(hbIntervalMs_) + " ms, " +
+                   "max=" + std::to_string(maxObjsPerHb_) + "/tick, " +
+                   "mult=" + std::to_string(hbIntervalMult_));
+
+    // 8. Main thread 10 s heartbeat timer
     addTimer(10000, &XCespProc::mainTimerCallback, this, true);
 
-    // 8. Load processing objects from [object.N] sections
-    loadObjects();
+    // 9. Object loading is deferred — handled by loadBatchTimerCallback
 
-    // 9. Create processing thread (must precede init() so getLoop() is valid)
+    // 10. Create processing thread
     procThread = addThread();
 
-    // 10. Supply each object with its event loop, log manager, and app tag
-    for (auto& obj : procObjects) {
-        obj->init(procThread->getLoop(), logManager, logTag);
-    }
-
-    // 11. Register processing tick timer and start thread
-    procThread->addTimer(5000, &XCespProc::processingTimerCallback, this, true);
+    // 11. Register processing tick timer (PROC_HB_INTERVAL) and start thread
+    procThread->addTimer(hbIntervalMs_, &XCespProc::processingTimerCallback, this, true);
+    procThread->setBackend(EvBackend::Epoll);
     procThread->start();
 
     logManager.log(LOG_INFO, logTag,
-                   "Processing thread started (" +
-                   std::to_string(procObjects.size()) +
-                   " object(s), 5 s tick)");
+                   "Processing thread started (HB=" + std::to_string(hbIntervalMs_) +
+                   " ms, mult=" + std::to_string(hbIntervalMult_) + ")");
+
+    // 12. Start deferred object loading on main thread
+    loadTimerId_ = addTimer(hbIntervalMs_, &XCespProc::loadBatchTimerCallback, this, true);
 
     return true;
 }
@@ -209,18 +221,30 @@ void XCespProc::setupLogging()
 }
 
 // ---------------------------------------------------------------------------
-// loadObjects
+// loadObjectsBatch  (main thread only — called from loadBatchTimerCallback)
 // ---------------------------------------------------------------------------
 
-void XCespProc::loadObjects()
+void XCespProc::loadObjectsBatch()
 {
-    for (int i = 1; ; ++i) {
-        std::string section = "object." + std::to_string(i);
+    int loaded = 0;
+
+    while (loaded < maxObjsPerHb_) {
+        std::string section = "object." + std::to_string(nextSectionIdx_);
         auto typeVal = iniConfig->getValue(section, "TYPE");
-        if (!typeVal.has_value() || typeVal->empty()) break;
+
+        if (!typeVal.has_value() || typeVal->empty()) {
+            // Reached end of configured sections — cancel load timer
+            if (loadTimerId_ >= 0) {
+                removeTimer(loadTimerId_);
+                loadTimerId_ = -1;
+            }
+            logManager.log(LOG_INFO, logTag,
+                           "Object loading complete: " +
+                           std::to_string(procObjects.size()) + " object(s)");
+            return;
+        }
 
         const std::string& type = typeVal.value();
-
         std::unique_ptr<ProcObject> obj;
 
         if (type == "UdpTester") {
@@ -228,22 +252,30 @@ void XCespProc::loadObjects()
         } else {
             logManager.log(LOG_WARNING, logTag,
                            section + ": unknown TYPE \"" + type + "\" — skipping");
+            ++nextSectionIdx_;
             continue;
         }
 
         if (!obj->loadConfig(*iniConfig, section)) {
             logManager.log(LOG_WARNING, logTag,
                            section + ": loadConfig() failed — skipping");
+            ++nextSectionIdx_;
             continue;
         }
 
+        obj->init(procThread->getLoop(), logManager, logTag);
+
         logManager.log(LOG_DEBUG, logTag,
                        "Loaded object: " + obj->getName() + " (type=" + type + ")");
-        procObjects.push_back(std::move(obj));
-    }
 
-    logManager.log(LOG_DEBUG, logTag,
-                   "loadObjects: " + std::to_string(procObjects.size()) + " object(s) loaded");
+        {
+            std::lock_guard<std::mutex> lock(procMutex_);
+            procObjects.push_back(std::move(obj));
+        }
+
+        ++nextSectionIdx_;
+        ++loaded;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -266,8 +298,47 @@ void XCespProc::mainTick()
 
 void XCespProc::processingTick()
 {
-    for (auto& obj : procObjects) {
+    // Collect up to maxObjsPerHb_ objects not yet processed in the current iteration.
+    // Lock briefly to snapshot pointers; process() is called outside the lock.
+    std::vector<ProcObject*> batch;
+    batch.reserve(static_cast<size_t>(maxObjsPerHb_));
+
+    {
+        std::lock_guard<std::mutex> lock(procMutex_);
+        for (auto& obj : procObjects) {
+            if (static_cast<int>(batch.size()) >= maxObjsPerHb_) break;
+            if (obj->getProcessIteration() != currentIteration_) {
+                obj->setProcessIteration(currentIteration_);
+                batch.push_back(obj.get());
+            }
+        }
+    }
+
+    for (ProcObject* obj : batch) {
+        logManager.log(LOG_DEBUG, logTag,"Process call for object "+obj->getName()+
+            " Iter:"+std::to_string(obj->getProcessIteration()));
         obj->process();
+    }
+
+    // Advance round counter; start a new iteration when the round is complete
+    ++processCounter_;
+    if (processCounter_ >= hbIntervalMult_) {
+        bool allCovered = true;
+        {
+            std::lock_guard<std::mutex> lock(procMutex_);
+            for (auto& obj : procObjects) {
+                if (obj->getProcessIteration() != currentIteration_) {
+                    allCovered = false;
+                    break;
+                }
+            }
+        }
+        if (allCovered) {
+            ++currentIteration_;
+            if (currentIteration_ == 0)
+                currentIteration_ = 1;   // 0 is reserved as "never processed"
+        }
+        processCounter_ = 0;
     }
 }
 
@@ -308,4 +379,10 @@ void XCespProc::processingTimerCallback(int id, void* userData)
 {
     (void)id;
     static_cast<XCespProc*>(userData)->processingTick();
+}
+
+void XCespProc::loadBatchTimerCallback(int id, void* userData)
+{
+    (void)id;
+    static_cast<XCespProc*>(userData)->loadObjectsBatch();
 }

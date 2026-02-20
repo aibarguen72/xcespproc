@@ -94,12 +94,22 @@ public:
      */
     ObjStatus getObjStatus() const { return status; }
 
+    // --- Scheduler iteration tracking ---
+
+    /**
+     * @brief  Return the scheduling iteration in which this object was last process()ed.
+     *         0 = never processed. Set by XCespProc::processingTick().
+     */
+    uint32_t getProcessIteration() const        { return processIteration_; }
+    void     setProcessIteration(uint32_t iter) { processIteration_ = iter; }
+
 protected:
     std::string    name_;
-    ObjStatus      status  = ObjStatus::IDLE;
-    EvApplication* loop_   = nullptr;    ///< thread event loop (set by init())
-    LogManager*    log_    = nullptr;    ///< shared log manager (set by init())
-    std::string    logTag_;              ///< e.g. "xcespproc-1:object.1" (set by init())
+    ObjStatus      status           = ObjStatus::IDLE;
+    EvApplication* loop_            = nullptr;    ///< thread event loop (set by init())
+    LogManager*    log_             = nullptr;    ///< shared log manager (set by init())
+    std::string    logTag_;                       ///< e.g. "xcespproc-1:object.1" (set by init())
+    uint32_t       processIteration_ = 0;         ///< last scheduling iteration; 0 = unprocessed
 };
 
 #endif // PROCOBJECT_H

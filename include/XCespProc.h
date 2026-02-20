@@ -9,6 +9,7 @@
 #define XCESPPROC_H
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -73,6 +74,22 @@ private:
     int         localPort = 1514;
     pid_t       originalPpid_ = 0; ///< PPID recorded at startup; 0 = no parent-loss check
 
+    // --- Scheduler config (read from [PROC] in INI) ---
+    int hbIntervalMs_   = 100;   ///< PROC_HB_INTERVAL: timer interval in ms
+    int maxObjsPerHb_   = 100;   ///< PROC_MAX_OBJECTS_PER_HB: objects handled per tick
+    int hbIntervalMult_ = 100;   ///< PROC_HB_INTERVAL_MULT: ticks per full round
+
+    // --- Processing round state (processing thread only, no lock needed) ---
+    uint32_t currentIteration_ = 1;  ///< iteration token; increments each completed round
+    int      processCounter_   = 0;  ///< ticks elapsed in the current round [0, hbIntervalMult_)
+
+    // --- Deferred loading state (main thread only, no lock needed) ---
+    int nextSectionIdx_ = 1;   ///< next INI [object.N] section index to probe
+    int loadTimerId_    = -1;  ///< main-thread load timer ID; -1 when not active
+
+    // --- Thread safety for procObjects (written by main, read by proc thread) ---
+    std::mutex procMutex_;
+
     /**
      * @brief  Set up log writers from [PROC] config:
      *         console, optional file, optional local syslog forwarding
@@ -80,11 +97,11 @@ private:
     void setupLogging();
 
     /**
-     * @brief  Load processing objects from [object.N] INI sections
-     *
-     * Iterates until no TYPE key is found. Supported types: "UdpTester".
+     * @brief  Load up to maxObjsPerHb_ objects from [object.N] INI sections,
+     *         starting from nextSectionIdx_. Cancels the load timer when the end
+     *         of configured sections is reached. Called from loadBatchTimerCallback.
      */
-    void loadObjects();
+    void loadObjectsBatch();
 
     /**
      * @brief  Print startup banner (program name and version) directly to stdout
@@ -92,12 +109,13 @@ private:
     void printBanner() const;
 
     /**
-     * @brief  Called from the main thread timer every 10 s — heartbeat log
+     * @brief  Called from the main thread 10 s timer — heartbeat log + parent-loss check
      */
     void mainTick();
 
     /**
-     * @brief  Called from the processing thread timer every 100 ms
+     * @brief  Called from the processing thread timer every PROC_HB_INTERVAL ms.
+     *         Processes up to maxObjsPerHb_ pending objects per tick.
      */
     void processingTick();
 
@@ -115,6 +133,11 @@ private:
      * @brief  EvThread timer callback — dispatches to processingTick()
      */
     static void processingTimerCallback(int id, void* userData);
+
+    /**
+     * @brief  Main-thread timer callback — dispatches to loadObjectsBatch()
+     */
+    static void loadBatchTimerCallback(int id, void* userData);
 };
 
 #endif // XCESPPROC_H
