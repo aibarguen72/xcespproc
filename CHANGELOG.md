@@ -1,5 +1,12 @@
 # Changelog - xcespproc
 
+## 0.0.11
+
+- Add `XCespProc::removeProcObject(name)` — thread-safe removal of a registered `ProcObject` by name
+- Removal is deferred: the main thread queues the name in `pendingRemovals_` (protected by `procMutex_`); the processing thread drains the queue at the top of `processingTick()` before batch collection, so no raw pointer in a live batch is ever invalidated
+- Returns `true` if the object was found (and queued), `false` if no match exists
+- Add two extra `[object.3]` / `[object.4]` `PktBert` entries to `test/xcespproc_alone.ini`
+
 ## 0.0.10
 
 - Add `PktBertPObj` — loopback PRBS packet BERT processing object

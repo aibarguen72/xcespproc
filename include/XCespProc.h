@@ -59,6 +59,19 @@ public:
      */
     void run();
 
+    /**
+     * @brief  Schedule a ProcObject for removal by name.
+     *
+     * Thread-safe: can be called from any thread. The actual destruction is
+     * deferred to the next processing tick so no raw pointer held by the
+     * processing thread is ever invalidated.
+     *
+     * @param  name  The name returned by ProcObject::getName()
+     * @return true if an object with that name was found (and queued),
+     *         false if no match exists
+     */
+    bool removeProcObject(const std::string& name);
+
 private:
     ArgConfig     argConfig;
     IniConfig*    iniConfig    = nullptr;
@@ -88,7 +101,8 @@ private:
     int loadTimerId_    = -1;  ///< main-thread load timer ID; -1 when not active
 
     // --- Thread safety for procObjects (written by main, read by proc thread) ---
-    std::mutex procMutex_;
+    std::mutex               procMutex_;
+    std::vector<std::string> pendingRemovals_;  ///< names queued for removal; protected by procMutex_
 
     /**
      * @brief  Set up log writers from [PROC] config:

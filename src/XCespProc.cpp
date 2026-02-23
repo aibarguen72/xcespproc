@@ -282,6 +282,25 @@ void XCespProc::loadObjectsBatch()
 }
 
 // ---------------------------------------------------------------------------
+// removeProcObject  (thread-safe; called from any thread)
+// ---------------------------------------------------------------------------
+
+bool XCespProc::removeProcObject(const std::string& name)
+{
+    std::lock_guard<std::mutex> lock(procMutex_);
+    auto it = std::find_if(procObjects.begin(), procObjects.end(),
+                           [&name](const std::unique_ptr<ProcObject>& p) {
+                               return p->getName() == name;
+                           });
+    if (it == procObjects.end())
+        return false;
+
+    pendingRemovals_.push_back(name);
+    logManager.log(LOG_DEBUG, logTag, "Queued removal of object: " + name);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // mainTick / processingTick
 // ---------------------------------------------------------------------------
 
@@ -308,6 +327,21 @@ void XCespProc::processingTick()
 
     {
         std::lock_guard<std::mutex> lock(procMutex_);
+
+        // Drain deferred removals before building the batch so no raw pointer
+        // in the batch can refer to a destroyed object.
+        for (const auto& name : pendingRemovals_) {
+            auto it = std::find_if(procObjects.begin(), procObjects.end(),
+                                   [&name](const std::unique_ptr<ProcObject>& p) {
+                                       return p->getName() == name;
+                                   });
+            if (it != procObjects.end()) {
+                logManager.log(LOG_INFO, logTag, "Removed object: " + name);
+                procObjects.erase(it);
+            }
+        }
+        pendingRemovals_.clear();
+
         for (auto& obj : procObjects) {
             if (static_cast<int>(batch.size()) >= maxObjsPerHb_) break;
             if (obj->getProcessIteration() != currentIteration_) {
