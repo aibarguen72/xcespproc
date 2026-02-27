@@ -86,8 +86,12 @@ bool PktBertPObj::loadConfig(IniConfig& ini, const std::string& section)
     config_.packetLossPPM = static_cast<uint32_t>(
                                 ini.getValueInteger(section, "PACKET_LOSS_PPM",    0));
     config_.linkName      = ini.getValue(section, "LINK", std::string(""));
+    config_.dstIp         = ini.getValue(section, "DST_IP",  std::string(""));
+    config_.dstPort       = static_cast<uint16_t>(
+                                ini.getValueInteger(section, "DST_PORT", 0));
 
-    if (config_.intervalMs < 1) config_.intervalMs = 1;
+    // intervalMs=0 is valid (pull-only mode: no self-timer, responds to onGetPDU)
+    if (config_.intervalMs < 0) config_.intervalMs = 0;
 
     // Clamp prbsType to supported values; default to 7
     if (config_.prbsType != 7 && config_.prbsType != 11 && config_.prbsType != 15)
@@ -125,7 +129,7 @@ void PktBertPObj::process()
             }
         }
 
-        if (loop_ != nullptr) {
+        if (config_.intervalMs > 0 && loop_ != nullptr) {
             bertTimerId_ = loop_->addTimer(
                 config_.intervalMs,
                 &PktBertPObj::bertTimerCallback,
@@ -133,12 +137,20 @@ void PktBertPObj::process()
                 true);
         }
 
-        if (bertTimerId_ >= 0) {
+        // Pull-only mode (intervalMs=0) is valid: go ACTIVE without a self-timer.
+        // Push mode requires a successfully registered timer.
+        bool timerOk = (config_.intervalMs == 0) || (bertTimerId_ >= 0);
+        if (timerOk) {
             status_.objStatus = ObjStatus::ACTIVE;
             status            = ObjStatus::ACTIVE;
             if (log_ != nullptr) {
-                std::string msg = "BERT timer registered (" +
-                                  std::to_string(config_.intervalMs) + " ms)";
+                std::string msg;
+                if (config_.intervalMs == 0) {
+                    msg = "BERT active (pull-only, INTERVAL_MS=0)";
+                } else {
+                    msg = "BERT timer registered (" +
+                          std::to_string(config_.intervalMs) + " ms)";
+                }
                 if (pduLink_ != nullptr) msg += ", link mode";
                 else                      msg += ", standalone loopback";
                 log_->log(LOG_INFO, logTag_, msg);
@@ -162,36 +174,48 @@ void PktBertPObj::process()
 
 void PktBertPObj::onTimer()
 {
-    // 1. Generate TX packet from PRBS LFSR
-    for (int i = 0; i < config_.packetSize; ++i)
-        local_.txPacket[static_cast<size_t>(i)] =
-            prbsNextByte(local_.txLfsrState, config_.prbsType);
-
     if (pduLink_ != nullptr) {
-        // Link mode: send packet to ROLE_MASTER (UdpTesterPObj) via link.
-        // The BERT RX path runs in onSendPDU() when the UDP response arrives.
-        // Silently skip if the link is not yet UP (master not registered yet).
-        if (pduLink_->getState() == LinkObject::LinkState::UP) {
-            if (!pduLink_->sendPDU(this, local_.txPacket.data(),
-                                   static_cast<size_t>(config_.packetSize))) {
-                if (log_ != nullptr)
-                    log_->log(LOG_WARNING, logTag_, "sendPDU() failed");
-            }
-        }
+        // Link mode: generate and push packet via the link.
+        generateAndSendPacket();
     } else {
-        // 2. Standalone loopback mode: simulate drop, then verify locally.
+        // Standalone loopback mode: generate, simulate optional drop, verify locally.
+        for (int i = 0; i < config_.packetSize; ++i)
+            local_.txPacket[static_cast<size_t>(i)] =
+                prbsNextByte(local_.txLfsrState, config_.prbsType);
+
         bool drop = (config_.packetLossPPM > 0) &&
                     (local_.rng() % 1000000u < config_.packetLossPPM);
-
         if (drop) {
-            // Receiver not called — rxLfsrState falls one packet behind
             if (log_ != nullptr)
                 log_->log(LOG_DEBUG, logTag_, "packet dropped (loss simulation)");
             return;
         }
-
         receivePacket(local_.txPacket.data(), config_.packetSize);
     }
+}
+
+void PktBertPObj::generateAndSendPacket()
+{
+    // Fill TX packet with the next PRBS bytes
+    for (int i = 0; i < config_.packetSize; ++i)
+        local_.txPacket[static_cast<size_t>(i)] =
+            prbsNextByte(local_.txLfsrState, config_.prbsType);
+
+    // Silently skip if the link is not yet UP (master not registered yet)
+    if (pduLink_ == nullptr || pduLink_->getState() != LinkObject::LinkState::UP)
+        return;
+
+    bool ok;
+    if (!config_.dstIp.empty() && config_.dstPort != 0) {
+        ok = pduLink_->sendPDUTo(this, local_.txPacket.data(),
+                                  static_cast<size_t>(config_.packetSize),
+                                  config_.dstIp, config_.dstPort);
+    } else {
+        ok = pduLink_->sendPDU(this, local_.txPacket.data(),
+                                static_cast<size_t>(config_.packetSize));
+    }
+    if (!ok && log_ != nullptr)
+        log_->log(LOG_WARNING, logTag_, "sendPDU/sendPDUTo failed");
 }
 
 void PktBertPObj::onSendPDU(const uint8_t* data, size_t len)
@@ -199,6 +223,14 @@ void PktBertPObj::onSendPDU(const uint8_t* data, size_t len)
     // Called by UdpTesterPObj::onRecv() when a UDP packet arrives back.
     // Verify the received payload against the expected PRBS sequence.
     receivePacket(data, static_cast<int>(len));
+}
+
+void PktBertPObj::onGetPDU()
+{
+    // Pull request from the ROLE_MASTER (UdpTesterPObj timer).
+    // Generate and push the next PRBS packet back via the link.
+    if (status_.objStatus != ObjStatus::ACTIVE) return;
+    generateAndSendPacket();
 }
 
 void PktBertPObj::receivePacket(const uint8_t* buf, int size)

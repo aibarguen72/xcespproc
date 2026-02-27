@@ -61,3 +61,54 @@ bool PduLinkObject::sendPDU(ProcObject* sender, const uint8_t* data, size_t len)
     receiver->onSendPDU(data, len);
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// sendPDUTo
+// ---------------------------------------------------------------------------
+
+bool PduLinkObject::sendPDUTo(ProcObject* sender, const uint8_t* data, size_t len,
+                               const std::string& dstIp, uint16_t dstPort)
+{
+    ProcObject* m = master_.load(std::memory_order_acquire);
+    ProcObject* s = slave_.load(std::memory_order_acquire);
+
+    if (m == nullptr || s == nullptr)
+        return false;
+
+    ProcObject* peer = nullptr;
+    if      (sender == m) peer = s;
+    else if (sender == s) peer = m;
+    else return false;
+
+    auto* receiver = dynamic_cast<IPduReceiver*>(peer);
+    if (receiver == nullptr)
+        return false;
+
+    receiver->onSendPDUTo(data, len, dstIp, dstPort);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// getPDU
+// ---------------------------------------------------------------------------
+
+bool PduLinkObject::getPDU(ProcObject* sender)
+{
+    ProcObject* m = master_.load(std::memory_order_acquire);
+    ProcObject* s = slave_.load(std::memory_order_acquire);
+
+    if (m == nullptr || s == nullptr)
+        return false;
+
+    ProcObject* peer = nullptr;
+    if      (sender == m) peer = s;
+    else if (sender == s) peer = m;
+    else return false;
+
+    auto* receiver = dynamic_cast<IPduReceiver*>(peer);
+    if (receiver == nullptr)
+        return false;
+
+    receiver->onGetPDU();
+    return true;
+}

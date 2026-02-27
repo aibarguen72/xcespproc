@@ -26,6 +26,8 @@ struct PktBertConfig {
     int         prbsType      = 7;    ///< PRBS_TYPE: 7, 11, or 15 (LFSR degree)
     uint32_t    packetLossPPM = 0;    ///< PACKET_LOSS_PPM: simulated drop rate in standalone mode (0–1 000 000)
     std::string linkName;             ///< LINK: named link to register as ROLE_SLAVE (empty = standalone loopback)
+    std::string dstIp;               ///< DST_IP:  sendPDUTo address override (empty = use sendPDU)
+    uint16_t    dstPort = 0;         ///< DST_PORT: sendPDUTo port override (0 = use sendPDU)
 };
 
 /**
@@ -66,15 +68,23 @@ struct PktBertLocalStatus {
  *   IDLE   -> process() registers a repeating timer → ACTIVE
  *   ACTIVE -> timer fires: generate PRBS packet, optionally simulate drop, verify locally
  *
- * Link mode (LINK = <name>):
+ * Link mode, push (LINK = <name>, INTERVAL_MS > 0):
  *   IDLE   -> register as ROLE_SLAVE of named PduLink → register timer → ACTIVE
- *   ACTIVE -> timer fires: generate PRBS packet → sendPDU() to ROLE_MASTER (UdpTesterPObj)
+ *   ACTIVE -> timer fires: generateAndSendPacket() → sendPDU() (or sendPDUTo()) to ROLE_MASTER
  *             onSendPDU() called when UDP response arrives: verify received bytes against PRBS
+ *
+ * Link mode, pull (LINK = <name>, INTERVAL_MS = 0):
+ *   IDLE   -> register as ROLE_SLAVE → ACTIVE (no self-timer)
+ *   ACTIVE -> onGetPDU() called by ROLE_MASTER: generateAndSendPacket() → sendPDU()/sendPDUTo()
+ *             onSendPDU() called when UDP response arrives: verify received bytes against PRBS
+ *
+ * If DST_IP and DST_PORT are configured, generateAndSendPacket() uses sendPDUTo() to direct
+ * the carrier object (UdpTesterPObj) to send to that address instead of its default.
  *
  * In both modes the TX Fibonacci LFSR fills packets with ITU-T PRBS-7/11/15 bytes.
  * After a mismatch the RX LFSR is re-synced to the TX position.
  *
- * ERROR: process() is a no-op (timer registration failed).
+ * ERROR: process() is a no-op (timer registration failed in push mode).
  */
 class PktBertPObj : public ProcObject, public IPduReceiver {
 public:
@@ -96,6 +106,15 @@ public:
      * Runs on the processing thread — no locking needed.
      */
     void onSendPDU(const uint8_t* data, size_t len) override;
+
+    /**
+     * @brief  Respond to a pull request from the ROLE_MASTER peer.
+     *
+     * Called by PduLinkObject::getPDU() when UdpTesterPObj requests a packet.
+     * Generates the next PRBS packet and pushes it back via sendPDU() / sendPDUTo().
+     * Runs on the processing thread — no locking needed.
+     */
+    void onGetPDU() override;
 
     // --- Virtual accessors (const void* per base contract) ---
 
@@ -136,6 +155,7 @@ private:
     PduLinkObject* pduLink_     = nullptr; ///< link obtained after registration; nullptr = standalone mode
 
     void onTimer();
+    void generateAndSendPacket();        ///< fill TX PRBS buffer and push via sendPDU/sendPDUTo
     void receivePacket(const uint8_t* buf, int size);
 
     static void bertTimerCallback(int id, void* userData);

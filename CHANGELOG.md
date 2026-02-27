@@ -1,5 +1,30 @@
 # Changelog - xcespproc
 
+## 0.0.13
+
+### Pull mechanism (`getPDU` / `onGetPDU`)
+
+- `IPduReceiver` gains two optional methods: `onSendPDUTo(data, len, dstIp, dstPort)` (default falls back to `onSendPDU`) and `onGetPDU()` (default no-op)
+- `PduLinkObject`: add `sendPDUTo(sender, data, len, dstIp, dstPort)` — same peer lookup as `sendPDU`, calls `onSendPDUTo` on the peer; add `getPDU(sender)` — same peer lookup, calls `onGetPDU()` on the peer
+- When `UdpTesterPObj` has a timer (`INTERVAL_MS > 0`) and is in link mode, `onSendTimer()` now calls `pduLink_->getPDU(this)` instead of self-sending; the peer (PktBert) generates and pushes the packet back synchronously via `sendPDU()`
+- `PktBertPObj` implements `onGetPDU()`: calls `generateAndSendPacket()` to fill the PRBS TX buffer and push it to the master via `sendPDU()` or `sendPDUTo()`
+
+### Destination override (`sendPDUTo`)
+
+- `UdpTesterPObj` overrides `onSendPDUTo`: builds a per-call `sockaddr_in` from the supplied `dstIp`/`dstPort` and calls `sendto()` to that address instead of the object's configured `DST_IP:DST_PORT`
+- `PktBertConfig`: add `dstIp` (string) and `dstPort` (`uint16_t`) loaded from INI keys `DST_IP` / `DST_PORT` (both default to empty/0 = disabled); when both are non-empty/non-zero, `generateAndSendPacket()` calls `sendPDUTo` instead of `sendPDU`
+- Extracted private `generateAndSendPacket()` helper shared by `onTimer()` (push) and `onGetPDU()` (pull)
+
+### PktBert `INTERVAL_MS=0` support
+
+- `INTERVAL_MS=0` is now valid for `PktBertPObj`: no self-timer is registered; object transitions to ACTIVE immediately and responds only to `onGetPDU` pull requests; useful when the master (UdpTester) owns the packet cadence
+- Removed the `< 1` clamp on `intervalMs` in `loadConfig()`
+- `process()` IDLE: timer registered only when `intervalMs > 0`; goes ACTIVE on `intervalMs == 0` or successful timer registration
+
+### INI config
+
+- `test/xcespproc_alone.ini`: UdpTester objects `INTERVAL_MS=1000` (drive cadence via `getPDU`), PktBert objects `INTERVAL_MS=0` (pull-only); `object.4` adds `DST_IP=127.0.0.1 DST_PORT=5000` to exercise `sendPDUTo`
+
 ## 0.0.12
 
 ### Link infrastructure

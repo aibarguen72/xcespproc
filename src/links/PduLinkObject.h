@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 /**
  * @brief  Interface that a ProcObject must implement to receive PDUs via a PduLinkObject.
@@ -37,6 +38,32 @@ public:
      * @param  len   Payload length in bytes.
      */
     virtual void onSendPDU(const uint8_t* data, size_t len) = 0;
+
+    /**
+     * @brief  Called by PduLinkObject::sendPDUTo() — same as onSendPDU but carries a
+     *         one-shot destination address hint.  The receiver may use dstIp/dstPort to
+     *         direct this specific payload to an address other than its configured default.
+     *
+     * Default implementation ignores the address hint and delegates to onSendPDU().
+     *
+     * @param  data     PDU payload (caller-owned; valid for this call only).
+     * @param  len      Payload length in bytes.
+     * @param  dstIp    Destination IPv4 address string (e.g. "10.0.0.1").
+     * @param  dstPort  Destination UDP port.
+     */
+    virtual void onSendPDUTo(const uint8_t* data, size_t len,
+                              const std::string& dstIp, uint16_t dstPort) {
+        (void)dstIp; (void)dstPort;
+        onSendPDU(data, len);
+    }
+
+    /**
+     * @brief  Called by PduLinkObject::getPDU() — a pull request from the peer.
+     *
+     * The implementation should generate a PDU and push it back to the requesting
+     * peer by calling pduLink_->sendPDU() (or sendPDUTo()).  Default is a no-op.
+     */
+    virtual void onGetPDU() {}
 };
 
 /**
@@ -75,6 +102,36 @@ public:
      *           - the peer does not implement IPduReceiver.
      */
     bool sendPDU(ProcObject* sender, const uint8_t* data, size_t len);
+
+    /**
+     * @brief  Deliver a PDU with a one-shot destination address hint.
+     *
+     * Like sendPDU() but calls the peer's onSendPDUTo(data, len, dstIp, dstPort)
+     * instead of onSendPDU(), allowing the carrier object to redirect this specific
+     * packet to a different network address without changing its persistent config.
+     *
+     * @param  sender   Must be the object registered as ROLE_MASTER or ROLE_SLAVE.
+     * @param  data     PDU payload (not retained after this call returns).
+     * @param  len      Payload length in bytes.
+     * @param  dstIp    Destination IPv4 address hint for this datagram.
+     * @param  dstPort  Destination UDP port hint for this datagram.
+     *
+     * @return true on successful delivery; false on same conditions as sendPDU().
+     */
+    bool sendPDUTo(ProcObject* sender, const uint8_t* data, size_t len,
+                   const std::string& dstIp, uint16_t dstPort);
+
+    /**
+     * @brief  Request a PDU from the peer (pull mechanism).
+     *
+     * Calls the peer's onGetPDU().  The peer is expected to generate a packet
+     * and push it back via sendPDU() / sendPDUTo() synchronously.
+     *
+     * @param  sender  Must be the object registered as ROLE_MASTER or ROLE_SLAVE.
+     *
+     * @return true if the request was delivered; false on same conditions as sendPDU().
+     */
+    bool getPDU(ProcObject* sender);
 
 private:
     static const std::string CLASS_NAME;   ///< "PDU"

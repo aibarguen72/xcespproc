@@ -95,6 +95,18 @@ public:
      */
     void onSendPDU(const uint8_t* data, size_t len) override;
 
+    /**
+     * @brief  Send the given PDU as a UDP packet to an explicit destination.
+     *
+     * Called by PduLinkObject::sendPDUTo() when the peer supplies a one-shot
+     * address override.  Uses dstIp:dstPort for this datagram instead of the
+     * object's configured DST_IP:DST_PORT.
+     *
+     * Runs on the processing thread — no locking needed.
+     */
+    void onSendPDUTo(const uint8_t* data, size_t len,
+                     const std::string& dstIp, uint16_t dstPort) override;
+
     // --- Virtual accessors (const void* per base contract) ---
 
     const void* getConfig() const override { return &config_; }

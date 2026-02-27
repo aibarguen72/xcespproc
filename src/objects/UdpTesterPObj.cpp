@@ -166,6 +166,16 @@ void UdpTesterPObj::closeSocket()
 
 void UdpTesterPObj::onSendTimer()
 {
+    // Link mode: request a packet from the peer (pull mechanism) instead of self-sending
+    if (pduLink_ != nullptr) {
+        if (!pduLink_->getPDU(this)) {
+            if (log_ != nullptr)
+                log_->log(LOG_DEBUG, logTag_, "getPDU() returned false (link not UP yet?)");
+        }
+        return;
+    }
+
+    // Standalone: send own pre-allocated payload to the configured destination
     if (local_.socketFd < 0) return;
 
     ssize_t sent = sendto(local_.socketFd,
@@ -199,6 +209,33 @@ void UdpTesterPObj::onSendPDU(const uint8_t* data, size_t len)
     } else {
         if (log_ != nullptr)
             log_->log(LOG_WARNING, logTag_, "link→UDP: sendto() failed");
+    }
+}
+
+void UdpTesterPObj::onSendPDUTo(const uint8_t* data, size_t len,
+                                 const std::string& dstIp, uint16_t dstPort)
+{
+    if (local_.socketFd < 0) return;
+
+    struct sockaddr_in dst{};
+    dst.sin_family = AF_INET;
+    dst.sin_port   = htons(dstPort);
+    inet_pton(AF_INET, dstIp.c_str(), &dst.sin_addr);
+
+    ssize_t sent = sendto(local_.socketFd,
+                          data, len,
+                          0,
+                          reinterpret_cast<const struct sockaddr*>(&dst),
+                          sizeof(dst));
+    if (sent > 0) {
+        ++stats_.packetsSent;
+        if (log_ != nullptr)
+            log_->vlog(LOG_DEBUG, logTag_, "link→UDP(to %s:%u): sent %d bytes",
+                       dstIp.c_str(), static_cast<unsigned>(dstPort),
+                       static_cast<int>(sent));
+    } else {
+        if (log_ != nullptr)
+            log_->log(LOG_WARNING, logTag_, "link→UDP(to): sendto() failed");
     }
 }
 
