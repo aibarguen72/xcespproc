@@ -8,6 +8,7 @@
 #ifndef XCESPPROC_H
 #define XCESPPROC_H
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -19,6 +20,8 @@
 #include "ArgConfig.h"
 
 #include "ProcObject.h"
+#include "LinkRegistry.h"
+#include "links/LinkObject.h"
 
 // Forward declaration — full definition in evthread.h (included via evapplication.h)
 class EvThread;
@@ -34,7 +37,7 @@ class EvThread;
  *  - A dedicated processing thread (EvThread) with a 100 ms repeating timer
  *    that calls process() on every registered ProcObject
  */
-class XCespProc : public EvApplication {
+class XCespProc : public EvApplication, public LinkRegistry {
 public:
     /**
      * @brief  Construct the application, wrapping argc/argv for later parsing
@@ -72,6 +75,41 @@ public:
      */
     bool removeProcObject(const std::string& name);
 
+    // --- LinkRegistry interface ---
+
+    /**
+     * @brief  Register a ProcObject into a named link with the given role.
+     *
+     * Creates the LinkObject if it does not exist (using linkClass to select
+     * the concrete type).  Returns false if the link already exists with a
+     * different class, if the role is already occupied, or if linkClass is
+     * unknown.
+     *
+     * Thread-safe: protected by linksMutex_.
+     */
+    bool registerLink(const std::string& name,
+                      ProcObject*         obj,
+                      LinkRole            role,
+                      const std::string&  linkClass) override;
+
+    /**
+     * @brief  Remove the given object from the named link.
+     *
+     * The LinkObject itself is retained in the registry (allows re-registration
+     * without recreating it).
+     *
+     * Thread-safe: protected by linksMutex_.
+     */
+    void unregisterLink(const std::string& name, ProcObject* obj) override;
+
+    /**
+     * @brief  Look up a link by name.
+     *
+     * @return Pointer to the LinkObject, or nullptr if not found.
+     *         The pointer is stable for the lifetime of this XCespProc instance.
+     */
+    LinkObject* getLink(const std::string& name) override;
+
 private:
     ArgConfig     argConfig;
     IniConfig*    iniConfig    = nullptr;
@@ -103,6 +141,10 @@ private:
     // --- Thread safety for procObjects (written by main, read by proc thread) ---
     std::mutex               procMutex_;
     std::vector<std::string> pendingRemovals_;  ///< names queued for removal; protected by procMutex_
+
+    // --- Link registry (LinkRegistry interface implementation) ---
+    std::map<std::string, std::unique_ptr<LinkObject>> links_;
+    std::mutex                                          linksMutex_;  ///< protects links_ map structure
 
     /**
      * @brief  Set up log writers from [PROC] config:

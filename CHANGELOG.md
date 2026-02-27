@@ -1,5 +1,24 @@
 # Changelog - xcespproc
 
+## 0.0.12
+
+### Link infrastructure
+
+- Add `LinkRole` enum (`ROLE_MASTER`, `ROLE_SLAVE`) in `src/links/LinkRole.h`
+- Add abstract `LinkObject` base class (`src/links/LinkObject.h/.cpp`): holds one `ProcObject*` per role as `std::atomic<ProcObject*>` for lock-free `sendPDU` / `unregisterLink` safety; `registerObject()` uses `compare_exchange_strong`; `getState()` returns `UP` when both slots are filled
+- Add `IPduReceiver` interface and `PduLinkObject` derived class (`src/links/PduLinkObject.h/.cpp`): `sendPDU(sender, data, len)` snapshots both role pointers with acquire loads, resolves the peer, and calls `peer->onSendPDU(data, len)` via `dynamic_cast<IPduReceiver*>`
+- Add `LinkRegistry` pure-virtual interface (`src/LinkRegistry.h`): `registerLink`, `unregisterLink`, `getLink` — decouples objects from `XCespProc`
+- `XCespProc` implements `LinkRegistry`; maintains `links_` (`std::map<string, unique_ptr<LinkObject>>`) protected by `linksMutex_` (separate from `procMutex_`); `registerLink` factory creates `PduLinkObject` for class `"PDU"`; link entries are never erased so raw pointers returned by `getLink()` are stable for the application lifetime
+- `ProcObject` gains protected `linkRegistry_` pointer and public `setLinkRegistry()` injector; `XCespProc::loadObjectsBatch()` calls `obj->setLinkRegistry(this)` immediately after `obj->init()`
+- `makefile`: add `-I src/links` to `CXXFLAGS`, `src/links/*.cpp` to `SRCS`, compile rule for `build/links/`, `$(BUILDDIR)/links` mkdir target
+
+### Object link integration
+
+- `UdpTesterPObj`: new `LINK` INI key — when set, registers as `ROLE_MASTER` of the named `PduLink` during IDLE→ACTIVE transition; `INTERVAL_MS=0` disables self-send timer (object becomes a pure UDP carrier); `onSendPDU(data, len)` sends the PDU payload as a UDP datagram to `DST_IP:DST_PORT` and increments `packetsSent`; `onRecv()` forwards received UDP datagrams back to the link peer via `pduLink_->sendPDU(this, buf, n)`; link unregistered in `closeSocket()` (destructor); implements `IPduReceiver`
+- `PktBertPObj`: new `INTERVAL_MS` INI key (default 1000 ms, min 1) controls BERT timer interval replacing the hardcoded 1 s; new `LINK` INI key — when set, registers as `ROLE_SLAVE` during IDLE→ACTIVE transition; in link mode `onTimer()` sends the PRBS packet via `pduLink_->sendPDU()` to the ROLE_MASTER (skips silently if link not UP yet); `onSendPDU(data, len)` receives the returned UDP payload and calls `receivePacket()` for PRBS verification; standalone loopback with `PACKET_LOSS_PPM` drop simulation retained when no LINK is configured; link unregistered in destructor; implements `IPduReceiver`
+- Update `test/xcespproc_alone.ini` with two independent `PktBert↔UdpTester` link setups (`link001`, `link002`) for out-of-the-box loopback BERT testing
+- Add commented link-mode example to `test/xcespproc.ini`
+
 ## 0.0.11
 
 - Add `XCespProc::removeProcObject(name)` — thread-safe removal of a registered `ProcObject` by name

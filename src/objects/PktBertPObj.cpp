@@ -51,6 +51,11 @@ static uint8_t prbsNextByte(uint32_t& state, int type)
 
 PktBertPObj::~PktBertPObj()
 {
+    // Unregister from link before the timer is removed
+    if (pduLink_ != nullptr && linkRegistry_ != nullptr) {
+        linkRegistry_->unregisterLink(config_.linkName, this);
+        pduLink_ = nullptr;
+    }
     if (bertTimerId_ >= 0 && loop_ != nullptr) {
         loop_->removeTimer(bertTimerId_);
         bertTimerId_ = -1;
@@ -72,12 +77,17 @@ bool PktBertPObj::loadConfig(IniConfig& ini, const std::string& section)
 {
     ProcObject::loadConfig(ini, section);
 
+    config_.intervalMs    = static_cast<int>(
+                                ini.getValueInteger(section, "INTERVAL_MS",    1000));
     config_.packetSize    = static_cast<int>(
-                                ini.getValueInteger(section, "PACKET_SIZE", 64));
+                                ini.getValueInteger(section, "PACKET_SIZE",       64));
     config_.prbsType      = static_cast<int>(
-                                ini.getValueInteger(section, "PRBS_TYPE",    7));
+                                ini.getValueInteger(section, "PRBS_TYPE",          7));
     config_.packetLossPPM = static_cast<uint32_t>(
-                                ini.getValueInteger(section, "PACKET_LOSS_PPM", 0));
+                                ini.getValueInteger(section, "PACKET_LOSS_PPM",    0));
+    config_.linkName      = ini.getValue(section, "LINK", std::string(""));
+
+    if (config_.intervalMs < 1) config_.intervalMs = 1;
 
     // Clamp prbsType to supported values; default to 7
     if (config_.prbsType != 7 && config_.prbsType != 11 && config_.prbsType != 15)
@@ -94,14 +104,30 @@ bool PktBertPObj::loadConfig(IniConfig& ini, const std::string& section)
 
 void PktBertPObj::process()
 {
-    // IDLE: register 1-second repeating BERT timer → ACTIVE
+    // IDLE: register link (if configured) and start the BERT timer → ACTIVE
     if (status_.objStatus == ObjStatus::IDLE) {
         if (log_ != nullptr)
-            log_->log(LOG_INFO, logTag_, "Object IDLE. Starting BERT timer");
+            log_->log(LOG_INFO, logTag_, "Object IDLE. Starting BERT");
+
+        // Register into named link as ROLE_SLAVE if configured
+        if (!config_.linkName.empty() && linkRegistry_ != nullptr) {
+            if (linkRegistry_->registerLink(config_.linkName, this,
+                                            LinkRole::ROLE_SLAVE, "PDU")) {
+                pduLink_ = static_cast<PduLinkObject*>(
+                               linkRegistry_->getLink(config_.linkName));
+                if (log_ != nullptr)
+                    log_->log(LOG_INFO, logTag_,
+                              "registered as SLAVE in link \"" + config_.linkName + "\"");
+            } else {
+                if (log_ != nullptr)
+                    log_->log(LOG_WARNING, logTag_,
+                              "registerLink failed for \"" + config_.linkName + "\"");
+            }
+        }
 
         if (loop_ != nullptr) {
             bertTimerId_ = loop_->addTimer(
-                1000,
+                config_.intervalMs,
                 &PktBertPObj::bertTimerCallback,
                 this,
                 true);
@@ -110,8 +136,13 @@ void PktBertPObj::process()
         if (bertTimerId_ >= 0) {
             status_.objStatus = ObjStatus::ACTIVE;
             status            = ObjStatus::ACTIVE;
-            if (log_ != nullptr)
-                log_->log(LOG_INFO, logTag_, "BERT timer registered, entering ACTIVE");
+            if (log_ != nullptr) {
+                std::string msg = "BERT timer registered (" +
+                                  std::to_string(config_.intervalMs) + " ms)";
+                if (pduLink_ != nullptr) msg += ", link mode";
+                else                      msg += ", standalone loopback";
+                log_->log(LOG_INFO, logTag_, msg);
+            }
         } else {
             status_.objStatus = ObjStatus::ERROR;
             status            = ObjStatus::ERROR;
@@ -136,19 +167,38 @@ void PktBertPObj::onTimer()
         local_.txPacket[static_cast<size_t>(i)] =
             prbsNextByte(local_.txLfsrState, config_.prbsType);
 
-    // 2. Drop decision: uniform random in [0, 999999]
-    bool drop = (config_.packetLossPPM > 0) &&
-                (local_.rng() % 1000000u < config_.packetLossPPM);
+    if (pduLink_ != nullptr) {
+        // Link mode: send packet to ROLE_MASTER (UdpTesterPObj) via link.
+        // The BERT RX path runs in onSendPDU() when the UDP response arrives.
+        // Silently skip if the link is not yet UP (master not registered yet).
+        if (pduLink_->getState() == LinkObject::LinkState::UP) {
+            if (!pduLink_->sendPDU(this, local_.txPacket.data(),
+                                   static_cast<size_t>(config_.packetSize))) {
+                if (log_ != nullptr)
+                    log_->log(LOG_WARNING, logTag_, "sendPDU() failed");
+            }
+        }
+    } else {
+        // 2. Standalone loopback mode: simulate drop, then verify locally.
+        bool drop = (config_.packetLossPPM > 0) &&
+                    (local_.rng() % 1000000u < config_.packetLossPPM);
 
-    if (drop) {
-        // Receiver not called — rxLfsrState falls one packet behind
-        if (log_ != nullptr)
-            log_->log(LOG_DEBUG, logTag_, "packet dropped (loss simulation)");
-        return;
+        if (drop) {
+            // Receiver not called — rxLfsrState falls one packet behind
+            if (log_ != nullptr)
+                log_->log(LOG_DEBUG, logTag_, "packet dropped (loss simulation)");
+            return;
+        }
+
+        receivePacket(local_.txPacket.data(), config_.packetSize);
     }
+}
 
-    // 3. Pass packet to receiver
-    receivePacket(local_.txPacket.data(), config_.packetSize);
+void PktBertPObj::onSendPDU(const uint8_t* data, size_t len)
+{
+    // Called by UdpTesterPObj::onRecv() when a UDP packet arrives back.
+    // Verify the received payload against the expected PRBS sequence.
+    receivePacket(data, static_cast<int>(len));
 }
 
 void PktBertPObj::receivePacket(const uint8_t* buf, int size)

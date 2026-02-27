@@ -9,6 +9,7 @@
 #define PKTBERTPOBJ_H
 
 #include "ProcObject.h"
+#include "PduLinkObject.h"
 
 #include <atomic>
 #include <cstdint>
@@ -20,9 +21,11 @@
  * @brief  Configuration parameters for PktBertPObj, loaded from an INI section
  */
 struct PktBertConfig {
-    int      packetSize    = 64;   ///< PACKET_SIZE: bytes per test packet
-    int      prbsType      = 7;    ///< PRBS_TYPE: 7, 11, or 15 (LFSR degree)
-    uint32_t packetLossPPM = 0;    ///< PACKET_LOSS_PPM: simulated drop rate (0–1 000 000)
+    int         intervalMs    = 1000; ///< INTERVAL_MS: ms between BERT packets (default 1000)
+    int         packetSize    = 64;   ///< PACKET_SIZE: bytes per test packet
+    int         prbsType      = 7;    ///< PRBS_TYPE: 7, 11, or 15 (LFSR degree)
+    uint32_t    packetLossPPM = 0;    ///< PACKET_LOSS_PPM: simulated drop rate in standalone mode (0–1 000 000)
+    std::string linkName;             ///< LINK: named link to register as ROLE_SLAVE (empty = standalone loopback)
 };
 
 /**
@@ -55,21 +58,25 @@ struct PktBertLocalStatus {
 };
 
 /**
- * @brief  Processing object that runs a loopback PRBS packet BERT.
+ * @brief  Processing object that runs a PRBS packet BERT.
  *
- * Every second the TX side fills a packet with PRBS bytes (Fibonacci LFSR,
- * ITU-T polynomials for degree 7, 11, or 15).  A configurable fraction of
- * packets is "dropped" (receiver not called) to simulate packet loss.
- * The RX side verifies received bytes against its own independently-running
- * copy of the same LFSR.  After a mismatch the RX LFSR is re-synced to the
- * TX LFSR so that normal operation resumes on the next non-dropped packet.
+ * Operates in two modes depending on configuration:
  *
- * State machine:
- *   IDLE   -> process() registers a 1-second repeating timer → ACTIVE
- *   ACTIVE -> timer fires each second: generate packet, maybe drop, then receive
- *   ERROR  -> process() is a no-op (timer registration failed)
+ * Standalone loopback mode (no LINK):
+ *   IDLE   -> process() registers a repeating timer → ACTIVE
+ *   ACTIVE -> timer fires: generate PRBS packet, optionally simulate drop, verify locally
+ *
+ * Link mode (LINK = <name>):
+ *   IDLE   -> register as ROLE_SLAVE of named PduLink → register timer → ACTIVE
+ *   ACTIVE -> timer fires: generate PRBS packet → sendPDU() to ROLE_MASTER (UdpTesterPObj)
+ *             onSendPDU() called when UDP response arrives: verify received bytes against PRBS
+ *
+ * In both modes the TX Fibonacci LFSR fills packets with ITU-T PRBS-7/11/15 bytes.
+ * After a mismatch the RX LFSR is re-synced to the TX position.
+ *
+ * ERROR: process() is a no-op (timer registration failed).
  */
-class PktBertPObj : public ProcObject {
+class PktBertPObj : public ProcObject, public IPduReceiver {
 public:
     ~PktBertPObj() override;
 
@@ -79,6 +86,16 @@ public:
               const std::string& appTag) override;
     bool loadConfig(IniConfig& ini, const std::string& section) override;
     void process() override;
+
+    // --- IPduReceiver interface ---
+
+    /**
+     * @brief  Receive a PDU from the link peer (UdpTesterPObj) and verify it as BERT data.
+     *
+     * Called when UdpTesterPObj receives a UDP packet and forwards it back via sendPDU().
+     * Runs on the processing thread — no locking needed.
+     */
+    void onSendPDU(const uint8_t* data, size_t len) override;
 
     // --- Virtual accessors (const void* per base contract) ---
 
@@ -115,7 +132,8 @@ private:
     PktBertStats       statsSnap_[2]{};   ///< read buffers for main-thread consumers
     std::atomic<int>   snapIdx_{0};       ///< index of the valid (latest) snapshot
 
-    int bertTimerId_ = -1;               ///< 1-second BERT timer; -1 = inactive
+    int            bertTimerId_ = -1;      ///< BERT repeating timer; -1 = inactive
+    PduLinkObject* pduLink_     = nullptr; ///< link obtained after registration; nullptr = standalone mode
 
     void onTimer();
     void receivePacket(const uint8_t* buf, int size);

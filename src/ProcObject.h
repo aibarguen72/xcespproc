@@ -12,6 +12,7 @@
 #include "IniConfig.h"
 #include "LogManager.h"
 #include "evapplication.h"
+#include "LinkRegistry.h"
 
 /**
  * @brief  Abstract base for all processing objects managed by the processing thread.
@@ -125,6 +126,19 @@ public:
     uint32_t getProcessIteration() const        { return processIteration_; }
     void     setProcessIteration(uint32_t iter) { processIteration_ = iter; }
 
+    // --- Link registry injection ---
+
+    /**
+     * @brief  Inject the link registry.
+     *
+     * Called by XCespProc after init().  Derived classes use linkRegistry_ to
+     * register themselves into named links during their first process() tick
+     * (IDLE state), and to unregister before removal.
+     *
+     * Guard all usage: linkRegistry_ is nullptr until injection.
+     */
+    void setLinkRegistry(LinkRegistry* reg) { linkRegistry_ = reg; }
+
 protected:
     std::string    name_;
     ObjStatus      status           = ObjStatus::IDLE;
@@ -132,6 +146,7 @@ protected:
     LogManager*    log_             = nullptr;    ///< shared log manager (set by init())
     std::string    logTag_;                       ///< e.g. "xcespproc-1:object.1" (set by init())
     uint32_t       processIteration_ = 0;         ///< last scheduling iteration; 0 = unprocessed
+    LinkRegistry*  linkRegistry_    = nullptr;    ///< link registry (injected after init(); nullptr until then)
 };
 
 #endif // PROCOBJECT_H

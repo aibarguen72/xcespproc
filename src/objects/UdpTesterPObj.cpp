@@ -44,6 +44,7 @@ bool UdpTesterPObj::loadConfig(IniConfig& ini, const std::string& section)
     config_.srcPort    = static_cast<int>(ini.getValueInteger(section, "SRC_PORT",         0));
     config_.dstIp      = ini.getValue(section, "DST_IP", std::string("127.0.0.1"));
     config_.dstPort    = static_cast<int>(ini.getValueInteger(section, "DST_PORT",      9999));
+    config_.linkName   = ini.getValue(section, "LINK", std::string(""));
 
     local_.payload.assign(static_cast<size_t>(config_.packetSize), 0);
 
@@ -60,21 +61,44 @@ void UdpTesterPObj::process()
             status_.objStatus = ObjStatus::ACTIVE;
             status            = ObjStatus::ACTIVE;
 
-            // Register event-driven send timer and recv socket callback
             if (loop_ != nullptr) {
-                sendTimerId_ = loop_->addTimer(
-                    config_.intervalMs,
-                    &UdpTesterPObj::sendTimerCallback,
-                    this,
-                    true);
+                // Self-send timer: only when INTERVAL_MS > 0
+                if (config_.intervalMs > 0) {
+                    sendTimerId_ = loop_->addTimer(
+                        config_.intervalMs,
+                        &UdpTesterPObj::sendTimerCallback,
+                        this,
+                        true);
+                }
+                // Always register recv callback (receives both self-send and link-routed packets)
                 loop_->addSocket(
                     local_.socketFd,
                     &UdpTesterPObj::recvCallback,
                     this);
             }
 
-            if (log_ != nullptr)
-                log_->log(LOG_INFO, logTag_, "socket opened, send timer registered");
+            // Register into the named link as ROLE_MASTER if configured
+            if (!config_.linkName.empty() && linkRegistry_ != nullptr) {
+                if (linkRegistry_->registerLink(config_.linkName, this,
+                                                LinkRole::ROLE_MASTER, "PDU")) {
+                    pduLink_ = static_cast<PduLinkObject*>(
+                                   linkRegistry_->getLink(config_.linkName));
+                    if (log_ != nullptr)
+                        log_->log(LOG_INFO, logTag_,
+                                  "registered as MASTER in link \"" + config_.linkName + "\"");
+                } else {
+                    if (log_ != nullptr)
+                        log_->log(LOG_WARNING, logTag_,
+                                  "registerLink failed for \"" + config_.linkName + "\"");
+                }
+            }
+
+            if (log_ != nullptr) {
+                std::string msg = "socket opened";
+                if (config_.intervalMs > 0) msg += ", send timer active";
+                if (pduLink_ != nullptr)     msg += ", link registered";
+                log_->log(LOG_INFO, logTag_, msg);
+            }
         } else {
             status_.objStatus = ObjStatus::ERROR;
             status            = ObjStatus::ERROR;
@@ -123,6 +147,11 @@ bool UdpTesterPObj::openSocket()
 
 void UdpTesterPObj::closeSocket()
 {
+    // Unregister from link before releasing the socket
+    if (pduLink_ != nullptr && linkRegistry_ != nullptr) {
+        linkRegistry_->unregisterLink(config_.linkName, this);
+        pduLink_ = nullptr;
+    }
     if (sendTimerId_ >= 0 && loop_ != nullptr) {
         loop_->removeTimer(sendTimerId_);
         sendTimerId_ = -1;
@@ -154,6 +183,25 @@ void UdpTesterPObj::onSendTimer()
     }
 }
 
+void UdpTesterPObj::onSendPDU(const uint8_t* data, size_t len)
+{
+    if (local_.socketFd < 0) return;
+
+    ssize_t sent = sendto(local_.socketFd,
+                          data, len,
+                          0,
+                          reinterpret_cast<const struct sockaddr*>(&local_.dst),
+                          sizeof(local_.dst));
+    if (sent > 0) {
+        ++stats_.packetsSent;
+        if (log_ != nullptr)
+            log_->vlog(LOG_DEBUG, logTag_, "link→UDP: sent %d bytes", static_cast<int>(sent));
+    } else {
+        if (log_ != nullptr)
+            log_->log(LOG_WARNING, logTag_, "link→UDP: sendto() failed");
+    }
+}
+
 void UdpTesterPObj::onRecv()
 {
     uint8_t buf[65536];
@@ -165,6 +213,14 @@ void UdpTesterPObj::onRecv()
         ++stats_.packetsReceived;
         if (log_ != nullptr)
             log_->vlog(LOG_DEBUG, logTag_, "received %zd bytes", n);
+
+        // In link mode: forward received UDP payload to the peer via sendPDU
+        if (pduLink_ != nullptr) {
+            if (!pduLink_->sendPDU(this, buf, static_cast<size_t>(n))) {
+                if (log_ != nullptr)
+                    log_->log(LOG_DEBUG, logTag_, "UDP→link: sendPDU() returned false (link not UP?)");
+            }
+        }
     }
 }
 

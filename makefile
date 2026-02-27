@@ -16,7 +16,7 @@ else
 endif
 
 CXX      := g++
-CXXFLAGS := -std=c++17 -Wall -Wextra -I include -I src -I src/objects -I ext/include \
+CXXFLAGS := -std=c++17 -Wall -Wextra -I include -I src -I src/objects -I src/links -I ext/include \
             -DPRJNAME=\"$(PRJNAME)\" -DPRJVERSION=\"$(PRJVERSION)\" \
             $(EPOLL_FLAG)
 LDFLAGS  := -L lib -L ext/lib -levapplication -llogservice -liniconfig -largconfig -lpthread
@@ -27,8 +27,8 @@ BINDIR   := bin
 TESTDIR  := test
 TESTSRC  := src/test
 
-# Automated file searching — includes src/objects/ sources
-SRCS     := $(wildcard $(SRCDIR)/*.cpp) $(wildcard $(SRCDIR)/objects/*.cpp)
+# Automated file searching — includes src/objects/ and src/links/ sources
+SRCS     := $(wildcard $(SRCDIR)/*.cpp) $(wildcard $(SRCDIR)/objects/*.cpp) $(wildcard $(SRCDIR)/links/*.cpp)
 OBJS     := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.o,$(SRCS))
 TSRCS    := $(wildcard $(TESTSRC)/*.cpp)
 TOBJS    := $(patsubst $(TESTSRC)/%.cpp,$(BUILDDIR)/test_%.o,$(TSRCS))
@@ -90,6 +90,13 @@ $(BINDIR) $(BUILDDIR):
 	mkdir -p $@
 
 $(BUILDDIR)/objects:
+	mkdir -p $@
+
+# Rule for src/links/*.cpp → build/links/%.o
+$(BUILDDIR)/links/%.o: $(SRCDIR)/links/%.cpp | $(BUILDDIR)/links
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILDDIR)/links:
 	mkdir -p $@
 
 clean:

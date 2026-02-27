@@ -9,6 +9,7 @@
 #define UDPTESTERPOBJ_H
 
 #include "ProcObject.h"
+#include "PduLinkObject.h"
 
 #include <atomic>
 #include <cstdint>
@@ -20,12 +21,13 @@
  * @brief  Configuration parameters for UdpTesterPObj, loaded from an INI section
  */
 struct UdpTesterConfig {
-    int         intervalMs  = 1000;        ///< INTERVAL_MS: ms between transmitted packets
-    int         packetSize  = 64;          ///< PACKET_SIZE: payload size in bytes
+    int         intervalMs  = 1000;        ///< INTERVAL_MS: ms between self-generated packets; 0 = disabled
+    int         packetSize  = 64;          ///< PACKET_SIZE: payload size in bytes (self-send mode only)
     std::string srcIp       = "127.0.0.1"; ///< SRC_IP: local bind address
     int         srcPort     = 0;           ///< SRC_PORT: local bind port (0 = any)
     std::string dstIp       = "127.0.0.1"; ///< DST_IP: destination address
     int         dstPort     = 9999;        ///< DST_PORT: destination port
+    std::string linkName;                  ///< LINK: named link to register as ROLE_MASTER (empty = no link)
 };
 
 /**
@@ -55,17 +57,24 @@ struct UdpTesterLocalStatus {
 };
 
 /**
- * @brief  Processing object that sends UDP packets at a configurable interval.
+ * @brief  Processing object that sends and receives UDP packets.
  *
- * State machine:
- *   IDLE   -> process() calls openSocket() [SO_REUSEADDR + bind srcIp:srcPort]
- *              success -> ACTIVE: registers send timer and recv socket callback
- *              failure -> ERROR
- *   ACTIVE -> send timer fires -> onSendTimer() sends to dstIp:dstPort
- *             socket readable  -> onRecv() reads arriving packets
- *   ERROR  -> process() is a no-op
+ * Operates in two modes depending on configuration:
+ *
+ * Self-send mode (INTERVAL_MS > 0, no LINK):
+ *   IDLE   -> openSocket() → ACTIVE: register send timer + recv callback
+ *   ACTIVE -> send timer fires → onSendTimer() sends self-generated payload to dstIp:dstPort
+ *             socket readable  → onRecv() counts arriving packets
+ *
+ * Link mode (LINK = <name>, optionally INTERVAL_MS = 0):
+ *   IDLE   -> openSocket() → register as ROLE_MASTER of named PduLink → ACTIVE
+ *             If INTERVAL_MS > 0: also register self-send timer
+ *   ACTIVE -> peer calls sendPDU() → onSendPDU() sends the PDU payload as UDP
+ *             socket readable  → onRecv() forwards received UDP data to peer via sendPDU()
+ *
+ * ERROR: process() is a no-op.
  */
-class UdpTesterPObj : public ProcObject {
+class UdpTesterPObj : public ProcObject, public IPduReceiver {
 public:
     ~UdpTesterPObj() override;
 
@@ -75,6 +84,16 @@ public:
               const std::string& appTag) override;
     bool loadConfig(IniConfig& ini, const std::string& section) override;
     void process() override;
+
+    // --- IPduReceiver interface ---
+
+    /**
+     * @brief  Send the given PDU as a UDP packet to the configured destination.
+     *
+     * Called by the link peer (e.g. PktBertPObj) to inject a packet into the
+     * UDP path.  Runs on the processing thread — no locking needed.
+     */
+    void onSendPDU(const uint8_t* data, size_t len) override;
 
     // --- Virtual accessors (const void* per base contract) ---
 
@@ -114,7 +133,8 @@ private:
     UdpTesterStats       statsSnap_[2]{};   ///< read buffers for main-thread consumers
     std::atomic<int>     snapIdx_{0};       ///< index of the valid (latest) snapshot
 
-    int sendTimerId_ = -1;             ///< timer ID from loop_->addTimer(); -1 = inactive
+    int            sendTimerId_ = -1;      ///< timer ID from loop_->addTimer(); -1 = inactive
+    PduLinkObject* pduLink_     = nullptr; ///< link obtained after registration; nullptr = no link
 
     bool openSocket();
     void closeSocket();

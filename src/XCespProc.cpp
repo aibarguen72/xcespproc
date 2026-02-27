@@ -12,6 +12,8 @@
 #include "SyslogWriter.h"
 #include "UdpTesterPObj.h"
 #include "PktBertPObj.h"
+#include "LinkObject.h"
+#include "PduLinkObject.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -267,6 +269,7 @@ void XCespProc::loadObjectsBatch()
         }
 
         obj->init(procThread->getLoop(), logManager, logTag);
+        obj->setLinkRegistry(this);
 
         logManager.log(LOG_DEBUG, logTag,
                        "Loaded object: " + obj->getName() + " (type=" + type + ")");
@@ -298,6 +301,90 @@ bool XCespProc::removeProcObject(const std::string& name)
     pendingRemovals_.push_back(name);
     logManager.log(LOG_DEBUG, logTag, "Queued removal of object: " + name);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// LinkRegistry interface implementation
+// ---------------------------------------------------------------------------
+
+bool XCespProc::registerLink(const std::string& name,
+                             ProcObject*         obj,
+                             LinkRole            role,
+                             const std::string&  linkClass)
+{
+    std::lock_guard<std::mutex> lock(linksMutex_);
+
+    auto it = links_.find(name);
+    if (it == links_.end()) {
+        // Link does not exist — create using factory
+        std::unique_ptr<LinkObject> newLink;
+
+        if (linkClass == "PDU") {
+            newLink = std::make_unique<PduLinkObject>(name);
+        } else {
+            logManager.log(LOG_ERROR, logTag,
+                           "registerLink: unknown link class \"" + linkClass +
+                           "\" for link \"" + name + "\"");
+            return false;
+        }
+
+        auto ins = links_.emplace(name, std::move(newLink));
+        it = ins.first;
+    } else {
+        // Link already exists — verify the class matches
+        if (it->second->getLinkClass() != linkClass) {
+            logManager.log(LOG_ERROR, logTag,
+                           "registerLink: link \"" + name + "\" is class \"" +
+                           it->second->getLinkClass() + "\", caller requested \"" +
+                           linkClass + "\"");
+            return false;
+        }
+    }
+
+    bool ok = it->second->registerObject(obj, role);
+    if (!ok) {
+        logManager.log(LOG_WARNING, logTag,
+                       "registerLink: role already taken in link \"" + name + "\"");
+    } else {
+        const std::string roleStr = (role == LinkRole::ROLE_MASTER) ? "MASTER" : "SLAVE";
+        logManager.log(LOG_DEBUG, logTag,
+                       "registerLink: " + obj->getName() +
+                       " registered as " + roleStr +
+                       " in link \"" + name + "\" (class=" + linkClass + ")" +
+                       " — state=" +
+                       (it->second->getState() == LinkObject::LinkState::UP ? "UP" : "INCOMPLETE"));
+    }
+    return ok;
+}
+
+void XCespProc::unregisterLink(const std::string& name, ProcObject* obj)
+{
+    std::lock_guard<std::mutex> lock(linksMutex_);
+
+    auto it = links_.find(name);
+    if (it == links_.end()) {
+        logManager.log(LOG_WARNING, logTag,
+                       "unregisterLink: link \"" + name + "\" not found");
+        return;
+    }
+
+    it->second->unregisterObject(obj);
+
+    logManager.log(LOG_DEBUG, logTag,
+                   "unregisterLink: removed object from link \"" + name + "\"" +
+                   " — state=" +
+                   (it->second->getState() == LinkObject::LinkState::UP ? "UP" : "INCOMPLETE"));
+    // Note: the LinkObject is retained in links_ to allow re-registration.
+}
+
+LinkObject* XCespProc::getLink(const std::string& name)
+{
+    std::lock_guard<std::mutex> lock(linksMutex_);
+
+    auto it = links_.find(name);
+    if (it == links_.end())
+        return nullptr;
+    return it->second.get();
 }
 
 // ---------------------------------------------------------------------------
