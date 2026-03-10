@@ -1,5 +1,44 @@
 # Changelog - xcespproc
 
+## 0.0.14
+
+### CtrlLink — TCP client to xcespserver
+
+- Add `CtrlLink` class (`src/CtrlLink.h/.cpp`): event-driven TCP client implementing the xcespctrl protocol toward xcespserver
+  - `connect()`: blocking TCP connect, sends HELLO (`PROC_ID=N\n`), registers socket with main-thread event loop, starts heartbeat timer
+  - Receives `RESET` → `clearAllObjects()` + `ACK CMD=RESET`; `DEPLOY` (INI body) → parse + `deployObjectFromIni()` + `ACK CMD=DEPLOY`; `REMOVE NAME=<n>` → `removeProcObject(n)`; `STATUS_POLL` → `buildStatusReportJson()` + `STATUS_REPORT`
+  - Sends periodic `HEARTBEAT PROC_ID=N\n` at `PROC_HB_INTERVAL × PROC_HB_INTERVAL_MULT` ms (default 10 s); SIGUSR1 to xcespwdog is unchanged
+  - Reconnect: a repeating retry timer (default 30 s, `CTRL_RETRY_INTERVAL` in ms) fires `doConnect()` whenever `fd_ < 0`; initial connect failure and runtime disconnect both trigger automatic reconnect without restart; retry timer is removed only on clean shutdown
+
+### XCespProc additions
+
+- `deployObjectFromIni(ini, section)`: creates UdpTester or PktBert from a DEPLOY body INI section, calls `init()` + `setLinkRegistry()`, appends to procObjects under procMutex_
+- `clearAllObjects()`: queues all object names to pendingRemovals_ for safe deferred destruction by the processing thread
+- `buildStatusReportJson()`: returns `{"objects":[...]}` JSON by calling `buildStatusJson()` on each object
+
+### ProcObject additions
+
+- Add `virtual std::string buildStatusJson() const` (base returns `""`)
+- `UdpTesterPObj` override: `{"type":"UdpTester","name":"...","status":"ACTIVE/IDLE/ERROR","stats":{"packetsSent":N,"packetsReceived":N}}`
+- `PktBertPObj` override: `{"type":"PktBert","name":"...","status":"...","stats":{"goodPackets":N,"badPackets":N,"syncOk":true/false}}`
+
+### IniConfig additions (exsrc/iniconfig)
+
+- Default constructor `IniConfig()` for empty instances
+- `loadFromString(content)`: parses INI text from string (replaces table); used by CtrlLink to decode DEPLOY body
+- `getSections()`: returns section names in first-occurrence order
+
+### Configuration
+
+- `xcesptest/cfg/xcespproc.ini`: add `CTRL_HOST = 127.0.0.1` and `CTRL_PORT = 9900` to `[PROC]`; standalone `[object.N]` sections commented out
+- `XCespProc::init()`: if `CTRL_HOST` set → create and connect CtrlLink; else → INI-batch object loader (backward compatible)
+
+### ProcObject name fix
+
+- `ProcObject::loadConfig()`: use `NAME` INI attribute as runtime object name when present,
+  falling back to section name only if `NAME` is absent; fixes status paths showing
+  `object.1` instead of the configured instance name (e.g. `lo-tx`)
+
 ## 0.0.13
 
 ### Pull mechanism (`getPDU` / `onGetPDU`)

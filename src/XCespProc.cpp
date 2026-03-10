@@ -6,6 +6,7 @@
  */
 
 #include "XCespProc.h"
+#include "CtrlLink.h"
 
 #include "ConsoleWriter.h"
 #include "FileWriter.h"
@@ -140,12 +141,10 @@ bool XCespProc::init()
     // 8. Main thread 10 s heartbeat timer
     addTimer(10000, &XCespProc::mainTimerCallback, this, true);
 
-    // 9. Object loading is deferred — handled by loadBatchTimerCallback
-
-    // 10. Create processing thread
+    // 9. Create processing thread
     procThread = addThread();
 
-    // 11. Register processing tick timer (PROC_HB_INTERVAL) and start thread
+    // 10. Register processing tick timer (PROC_HB_INTERVAL) and start thread
     procThread->addTimer(hbIntervalMs_, &XCespProc::processingTimerCallback, this, true);
     procThread->setBackend(EvBackend::Epoll);
     procThread->start();
@@ -154,8 +153,28 @@ bool XCespProc::init()
                    "Processing thread started (HB=" + std::to_string(hbIntervalMs_) +
                    " ms, mult=" + std::to_string(hbIntervalMult_) + ")");
 
-    // 12. Start deferred object loading on main thread
-    loadTimerId_ = addTimer(hbIntervalMs_, &XCespProc::loadBatchTimerCallback, this, true);
+    // 11. CtrlLink or INI-based object loading
+    std::string ctrlHost    = iniConfig->getValue("PROC", "CTRL_HOST", "");
+    int ctrlPort            = static_cast<int>(iniConfig->getValueInteger("PROC", "CTRL_PORT",           9900));
+    int ctrlRetryMs         = static_cast<int>(iniConfig->getValueInteger("PROC", "CTRL_RETRY_INTERVAL", 30000));
+    if (ctrlRetryMs < 0) ctrlRetryMs = 0;
+
+    if (!ctrlHost.empty()) {
+        int hbMs = hbIntervalMs_ * hbIntervalMult_;
+        ctrlLink_ = std::make_unique<CtrlLink>(ctrlHost, ctrlPort, procId, hbMs, ctrlRetryMs,
+                                               *this, logManager, logTag);
+        if (!ctrlLink_->connect()) {
+            std::string retryMsg = ctrlRetryMs > 0
+                ? " — retrying every " + std::to_string(ctrlRetryMs / 1000) + " s"
+                : " — no retry configured";
+            logManager.log(LOG_WARNING, logTag,
+                           "CtrlLink: could not connect to " + ctrlHost +
+                           ":" + std::to_string(ctrlPort) + retryMsg);
+        }
+    } else {
+        // Fallback: load objects from [object.N] INI sections
+        loadTimerId_ = addTimer(hbIntervalMs_, &XCespProc::loadBatchTimerCallback, this, true);
+    }
 
     return true;
 }
@@ -282,6 +301,82 @@ void XCespProc::loadObjectsBatch()
         ++nextSectionIdx_;
         ++loaded;
     }
+}
+
+// ---------------------------------------------------------------------------
+// deployObjectFromIni  (main thread — called from CtrlLink on DEPLOY)
+// ---------------------------------------------------------------------------
+
+bool XCespProc::deployObjectFromIni(IniConfig& ini, const std::string& section)
+{
+    auto typeVal = ini.getValue(section, "TYPE");
+    if (!typeVal.has_value() || typeVal->empty()) {
+        logManager.log(LOG_WARNING, logTag,
+                       "deployObjectFromIni: no TYPE in section \"" + section + "\"");
+        return false;
+    }
+
+    const std::string& type = typeVal.value();
+    std::unique_ptr<ProcObject> obj;
+
+    if (type == "UdpTester") {
+        obj = std::make_unique<UdpTesterPObj>();
+    } else if (type == "PktBert") {
+        obj = std::make_unique<PktBertPObj>();
+    } else {
+        logManager.log(LOG_WARNING, logTag,
+                       "deployObjectFromIni: unknown TYPE \"" + type + "\" in \"" + section + "\"");
+        return false;
+    }
+
+    if (!obj->loadConfig(ini, section)) {
+        logManager.log(LOG_WARNING, logTag,
+                       "deployObjectFromIni: loadConfig() failed for \"" + section + "\"");
+        return false;
+    }
+
+    obj->init(procThread->getLoop(), logManager, logTag);
+    obj->setLinkRegistry(this);
+
+    logManager.log(LOG_DEBUG, logTag,
+                   "Deployed object: " + obj->getName() + " (type=" + type + ")");
+
+    std::lock_guard<std::mutex> lock(procMutex_);
+    procObjects.push_back(std::move(obj));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// clearAllObjects  (main thread — called from CtrlLink on RESET)
+// ---------------------------------------------------------------------------
+
+void XCespProc::clearAllObjects()
+{
+    std::lock_guard<std::mutex> lock(procMutex_);
+    logManager.log(LOG_INFO, logTag,
+                   "Clearing all " + std::to_string(procObjects.size()) + " objects");
+    for (const auto& obj : procObjects)
+        pendingRemovals_.push_back(obj->getName());
+}
+
+// ---------------------------------------------------------------------------
+// buildStatusReportJson  (main thread — called from CtrlLink on STATUS_POLL)
+// ---------------------------------------------------------------------------
+
+std::string XCespProc::buildStatusReportJson()
+{
+    std::lock_guard<std::mutex> lock(procMutex_);
+    std::string json = "{\"objects\":[";
+    bool first = true;
+    for (const auto& obj : procObjects) {
+        std::string s = obj->buildStatusJson();
+        if (s.empty()) continue;
+        if (!first) json += ',';
+        json += s;
+        first = false;
+    }
+    json += "]}";
+    return json;
 }
 
 // ---------------------------------------------------------------------------

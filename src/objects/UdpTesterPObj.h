@@ -129,6 +129,7 @@ public:
 
     void syncSnapshot() override;
     void clearStats()   override;
+    std::string buildStatusJson() const override;
 
 private:
     // --- Primary data (written exclusively by the processing thread) ---

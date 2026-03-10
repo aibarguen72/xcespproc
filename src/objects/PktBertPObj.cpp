@@ -283,6 +283,23 @@ void PktBertPObj::clearStats()
     stats_ = PktBertStats{};
 }
 
+std::string PktBertPObj::buildStatusJson() const
+{
+    int idx = snapIdx_.load(std::memory_order_acquire);
+    const PktBertStatus& st = statusSnap_[idx];
+    const PktBertStats&  ss = statsSnap_[idx];
+
+    const char* statusStr = "IDLE";
+    if (st.objStatus == ObjStatus::ACTIVE) statusStr = "ACTIVE";
+    else if (st.objStatus == ObjStatus::ERROR) statusStr = "ERROR";
+
+    return std::string("{\"type\":\"PktBert\",\"name\":\"") + name_ +
+           "\",\"status\":\"" + statusStr +
+           "\",\"stats\":{\"goodPackets\":" + std::to_string(ss.goodPackets) +
+           ",\"badPackets\":" + std::to_string(ss.badPackets) +
+           ",\"syncOk\":" + (st.syncOk ? "true" : "false") + "}}";
+}
+
 // ---------------------------------------------------------------------------
 // Static callback forwarder
 // ---------------------------------------------------------------------------

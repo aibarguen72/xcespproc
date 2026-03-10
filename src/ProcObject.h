@@ -89,6 +89,18 @@ public:
     virtual const void* getStats()  const { return nullptr; }
 
     /**
+     * @brief  Build a JSON object string describing this object's current status/stats.
+     *
+     * Used by CtrlLink to compose a STATUS_REPORT to xcespserver.
+     * The base implementation returns an empty string (object omitted from report).
+     * Concrete subclasses override to emit e.g.:
+     *   {"type":"UdpTester","name":"lo-tx","status":"ACTIVE","stats":{...}}
+     *
+     * Safe to call from the main thread — must read from the lock-free snapshot.
+     */
+    virtual std::string buildStatusJson() const { return ""; }
+
+    /**
      * @brief  Reset all accumulated statistics counters to zero.
      *
      * Must be called from the processing thread only — the primary stats struct

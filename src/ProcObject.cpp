@@ -9,8 +9,8 @@
 
 bool ProcObject::loadConfig(IniConfig& ini, const std::string& section)
 {
-    (void)ini;
-    name_ = section;
+    auto nameVal = ini.getValue(section, "NAME");
+    name_ = (nameVal.has_value() && !nameVal->empty()) ? nameVal.value() : section;
     return true;
 }
 

@@ -282,6 +282,22 @@ void UdpTesterPObj::clearStats()
     stats_ = UdpTesterStats{};
 }
 
+std::string UdpTesterPObj::buildStatusJson() const
+{
+    int idx = snapIdx_.load(std::memory_order_acquire);
+    const UdpTesterStatus& st = statusSnap_[idx];
+    const UdpTesterStats&  ss = statsSnap_[idx];
+
+    const char* statusStr = "IDLE";
+    if (st.objStatus == ObjStatus::ACTIVE) statusStr = "ACTIVE";
+    else if (st.objStatus == ObjStatus::ERROR) statusStr = "ERROR";
+
+    return std::string("{\"type\":\"UdpTester\",\"name\":\"") + name_ +
+           "\",\"status\":\"" + statusStr +
+           "\",\"stats\":{\"packetsSent\":" + std::to_string(ss.packetsSent) +
+           ",\"packetsReceived\":" + std::to_string(ss.packetsReceived) + "}}";
+}
+
 // ---------------------------------------------------------------------------
 // Static callback forwarders
 // ---------------------------------------------------------------------------

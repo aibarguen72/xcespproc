@@ -23,8 +23,9 @@
 #include "LinkRegistry.h"
 #include "links/LinkObject.h"
 
-// Forward declaration — full definition in evthread.h (included via evapplication.h)
+// Forward declarations
 class EvThread;
+class CtrlLink;
 
 /**
  * @brief  Main processing application class
@@ -61,6 +62,37 @@ public:
      * @brief  Enter the event loop (blocks until stopLoop() is called)
      */
     void run();
+
+    /**
+     * @brief  Create a processing object from an INI section and add it to the object list.
+     *
+     * Used by CtrlLink when a DEPLOY frame is received.  Parses TYPE from the
+     * section, constructs the appropriate object, calls loadConfig(), init(), and
+     * setLinkRegistry(), then appends to procObjects under procMutex_.
+     *
+     * @param  ini      IniConfig loaded from the DEPLOY body
+     * @param  section  Section name inside ini (e.g. "object.1")
+     * @return true on success, false if TYPE is unknown or loadConfig() fails
+     */
+    bool deployObjectFromIni(IniConfig& ini, const std::string& section);
+
+    /**
+     * @brief  Queue all current objects for removal (RESET from xcespserver).
+     *
+     * Thread-safe: queues all object names into pendingRemovals_ so the
+     * processing thread destroys them safely at the next tick.
+     */
+    void clearAllObjects();
+
+    /**
+     * @brief  Build a STATUS_REPORT JSON body from all current objects.
+     *
+     * Iterates procObjects (under procMutex_) and calls buildStatusJson() on each.
+     * Objects that return an empty string are omitted from the report.
+     *
+     * @return JSON string: {"objects":[...]}
+     */
+    std::string buildStatusReportJson();
 
     /**
      * @brief  Schedule a ProcObject for removal by name.
@@ -141,6 +173,9 @@ private:
     // --- Thread safety for procObjects (written by main, read by proc thread) ---
     std::mutex               procMutex_;
     std::vector<std::string> pendingRemovals_;  ///< names queued for removal; protected by procMutex_
+
+    // --- CtrlLink TCP client (main thread only; nullptr when not configured) ---
+    std::unique_ptr<CtrlLink> ctrlLink_;
 
     // --- Link registry (LinkRegistry interface implementation) ---
     std::map<std::string, std::unique_ptr<LinkObject>> links_;
