@@ -16,7 +16,7 @@ else
 endif
 
 CXX      := g++
-CXXFLAGS := -std=c++17 -Wall -Wextra -I include -I src -I src/objects -I src/links -I ext/include \
+CXXFLAGS := -std=c++17 -Wall -Wextra -MMD -MP -I include -I src -I src/objects -I src/links -I ext/include \
             -DPRJNAME=\"$(PRJNAME)\" -DPRJVERSION=\"$(PRJVERSION)\" \
             $(EPOLL_FLAG)
 LDFLAGS  := -L lib -L ext/lib -levapplication -llogservice -liniconfig -largconfig -lpthread
@@ -98,6 +98,9 @@ $(BUILDDIR)/links/%.o: $(SRCDIR)/links/%.cpp | $(BUILDDIR)/links
 
 $(BUILDDIR)/links:
 	mkdir -p $@
+
+DEPS := $(OBJS:.o=.d)
+-include $(DEPS)
 
 clean:
 	rm -rf $(BUILDDIR) $(BINDIR)/xcespproc $(TESTDIR)/xcespproc

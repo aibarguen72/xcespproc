@@ -35,7 +35,20 @@ public:
     /**
      * @brief  Return the object's human-readable name (set from the INI section name)
      */
-    const std::string& getName() const { return name_; }
+    const std::string& getName()         const { return name_; }
+
+    /**
+     * @brief  Return the config node type that spawned this object (e.g. "udptester").
+     *         Empty string if the object was loaded from a raw INI file without
+     *         NODE_TYPE metadata.
+     */
+    const std::string& getNodeType()     const { return nodeType_; }
+
+    /**
+     * @brief  Return the config node instance name (e.g. "lo-rx").
+     *         Empty string if not provided.
+     */
+    const std::string& getNodeInstance() const { return nodeInstance_; }
 
     // --- Lifecycle ---
 
@@ -153,6 +166,8 @@ public:
 
 protected:
     std::string    name_;
+    std::string    nodeType_;                       ///< config node type (injected via NODE_TYPE INI key)
+    std::string    nodeInstance_;                   ///< config node instance (injected via NODE_INSTANCE INI key)
     ObjStatus      status           = ObjStatus::IDLE;
     EvApplication* loop_            = nullptr;    ///< thread event loop (set by init())
     LogManager*    log_             = nullptr;    ///< shared log manager (set by init())

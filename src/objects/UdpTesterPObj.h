@@ -28,6 +28,7 @@ struct UdpTesterConfig {
     std::string dstIp       = "127.0.0.1"; ///< DST_IP: destination address
     int         dstPort     = 9999;        ///< DST_PORT: destination port
     std::string linkName;                  ///< LINK: named link to register as ROLE_MASTER (empty = no link)
+    bool        shutdown    = false;       ///< SHUTDOWN: node defined but not instantiated as a real object
 };
 
 /**

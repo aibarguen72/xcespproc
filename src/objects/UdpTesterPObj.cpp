@@ -45,6 +45,7 @@ bool UdpTesterPObj::loadConfig(IniConfig& ini, const std::string& section)
     config_.dstIp      = ini.getValue(section, "DST_IP", std::string("127.0.0.1"));
     config_.dstPort    = static_cast<int>(ini.getValueInteger(section, "DST_PORT",      9999));
     config_.linkName   = ini.getValue(section, "LINK", std::string(""));
+    config_.shutdown   = ini.getValueBoolean(section, "SHUTDOWN", false);
 
     local_.payload.assign(static_cast<size_t>(config_.packetSize), 0);
 
@@ -53,6 +54,9 @@ bool UdpTesterPObj::loadConfig(IniConfig& ini, const std::string& section)
 
 void UdpTesterPObj::process()
 {
+    // Shutdown mode: node is declared but not instantiated as a real object
+    if (config_.shutdown) return;
+
     // IDLE: attempt to open socket and transition to ACTIVE
     if (status_.objStatus == ObjStatus::IDLE) {
         if (log_ != nullptr)
@@ -284,6 +288,8 @@ void UdpTesterPObj::clearStats()
 
 std::string UdpTesterPObj::buildStatusJson() const
 {
+    if (config_.shutdown) return "";
+
     int idx = snapIdx_.load(std::memory_order_acquire);
     const UdpTesterStatus& st = statusSnap_[idx];
     const UdpTesterStats&  ss = statsSnap_[idx];
@@ -293,6 +299,8 @@ std::string UdpTesterPObj::buildStatusJson() const
     else if (st.objStatus == ObjStatus::ERROR) statusStr = "ERROR";
 
     return std::string("{\"type\":\"UdpTester\",\"name\":\"") + name_ +
+           "\",\"node_type\":\"" + nodeType_ +
+           "\",\"node_instance\":\"" + nodeInstance_ +
            "\",\"status\":\"" + statusStr +
            "\",\"stats\":{\"packetsSent\":" + std::to_string(ss.packetsSent) +
            ",\"packetsReceived\":" + std::to_string(ss.packetsReceived) + "}}";

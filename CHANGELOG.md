@@ -1,5 +1,21 @@
 # Changelog - xcespproc
 
+## 0.0.15
+
+### Node type / instance metadata in status JSON
+
+- `ProcObject`: add `nodeType_` and `nodeInstance_` fields (loaded from `NODE_TYPE` / `NODE_INSTANCE`
+  INI keys injected by xcespserver at deploy time); expose via `getNodeType()` / `getNodeInstance()`
+- `UdpTesterPObj::buildStatusJson()`: include `"node_type"` and `"node_instance"` fields in output JSON
+- `PktBertPObj::buildStatusJson()`: include `"node_type"` and `"node_instance"` fields in output JSON
+- `UdpTesterPObj`: add `SHUTDOWN` INI key — when true, `process()` and `buildStatusJson()` are
+  no-ops; allows a node to be declared in config without instantiating a real object
+
+### Build
+
+- `makefile`: add `-MMD -MP` to `CXXFLAGS` and `-include $(DEPS)` so header changes automatically
+  trigger recompilation of all dependent `.o` files; prevents silent ABI-mismatch crashes
+
 ## 0.0.14
 
 ### CtrlLink — TCP client to xcespserver

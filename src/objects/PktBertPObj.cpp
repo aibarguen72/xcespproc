@@ -294,6 +294,8 @@ std::string PktBertPObj::buildStatusJson() const
     else if (st.objStatus == ObjStatus::ERROR) statusStr = "ERROR";
 
     return std::string("{\"type\":\"PktBert\",\"name\":\"") + name_ +
+           "\",\"node_type\":\"" + nodeType_ +
+           "\",\"node_instance\":\"" + nodeInstance_ +
            "\",\"status\":\"" + statusStr +
            "\",\"stats\":{\"goodPackets\":" + std::to_string(ss.goodPackets) +
            ",\"badPackets\":" + std::to_string(ss.badPackets) +
