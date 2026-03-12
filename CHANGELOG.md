@@ -1,5 +1,12 @@
 # Changelog - xcespproc
 
+## 0.0.16
+
+- `ProcObject`: add `nodePath_` field (loaded from `NODE_PATH` INI key injected by xcespmap);
+  exposes the full hierarchical config path (e.g. `domain/main/udpbert/bert-a`)
+- `UdpTesterPObj::buildStatusJson()`: include `"node_path"` field in status JSON
+- `PktBertPObj::buildStatusJson()`: include `"node_path"` field in status JSON
+
 ## 0.0.15
 
 ### Node type / instance metadata in status JSON

@@ -13,6 +13,7 @@ bool ProcObject::loadConfig(IniConfig& ini, const std::string& section)
     name_ = (nameVal.has_value() && !nameVal->empty()) ? nameVal.value() : section;
     nodeType_     = ini.getValue(section, "NODE_TYPE",     std::string(""));
     nodeInstance_ = ini.getValue(section, "NODE_INSTANCE", std::string(""));
+    nodePath_     = ini.getValue(section, "NODE_PATH",     std::string(""));
     return true;
 }
 

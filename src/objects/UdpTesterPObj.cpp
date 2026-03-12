@@ -301,6 +301,7 @@ std::string UdpTesterPObj::buildStatusJson() const
     return std::string("{\"type\":\"UdpTester\",\"name\":\"") + name_ +
            "\",\"node_type\":\"" + nodeType_ +
            "\",\"node_instance\":\"" + nodeInstance_ +
+           "\",\"node_path\":\"" + nodePath_ +
            "\",\"status\":\"" + statusStr +
            "\",\"stats\":{\"packetsSent\":" + std::to_string(ss.packetsSent) +
            ",\"packetsReceived\":" + std::to_string(ss.packetsReceived) + "}}";

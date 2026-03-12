@@ -168,6 +168,7 @@ protected:
     std::string    name_;
     std::string    nodeType_;                       ///< config node type (injected via NODE_TYPE INI key)
     std::string    nodeInstance_;                   ///< config node instance (injected via NODE_INSTANCE INI key)
+    std::string    nodePath_;                       ///< full hierarchical config path (injected via NODE_PATH INI key)
     ObjStatus      status           = ObjStatus::IDLE;
     EvApplication* loop_            = nullptr;    ///< thread event loop (set by init())
     LogManager*    log_             = nullptr;    ///< shared log manager (set by init())

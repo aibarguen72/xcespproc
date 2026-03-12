@@ -296,6 +296,7 @@ std::string PktBertPObj::buildStatusJson() const
     return std::string("{\"type\":\"PktBert\",\"name\":\"") + name_ +
            "\",\"node_type\":\"" + nodeType_ +
            "\",\"node_instance\":\"" + nodeInstance_ +
+           "\",\"node_path\":\"" + nodePath_ +
            "\",\"status\":\"" + statusStr +
            "\",\"stats\":{\"goodPackets\":" + std::to_string(ss.goodPackets) +
            ",\"badPackets\":" + std::to_string(ss.badPackets) +
