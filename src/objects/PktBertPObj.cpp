@@ -196,14 +196,16 @@ void PktBertPObj::onTimer()
 
 void PktBertPObj::generateAndSendPacket()
 {
+    // Silently skip if the link is not yet UP (master not registered yet).
+    // Check BEFORE advancing the TX LFSR so the state stays in sync with
+    // what the receiver will actually see.
+    if (pduLink_ == nullptr || pduLink_->getState() != LinkObject::LinkState::UP)
+        return;
+
     // Fill TX packet with the next PRBS bytes
     for (int i = 0; i < config_.packetSize; ++i)
         local_.txPacket[static_cast<size_t>(i)] =
             prbsNextByte(local_.txLfsrState, config_.prbsType);
-
-    // Silently skip if the link is not yet UP (master not registered yet)
-    if (pduLink_ == nullptr || pduLink_->getState() != LinkObject::LinkState::UP)
-        return;
 
     bool ok;
     if (!config_.dstIp.empty() && config_.dstPort != 0) {
@@ -256,8 +258,16 @@ void PktBertPObj::receivePacket(const uint8_t* buf, int size)
     } else {
         ++stats_.badPackets;
         status_.syncOk = false;
-        // Re-sync: advance RX LFSR to match TX position for next packet
-        local_.rxLfsrState = local_.txLfsrState;
+        // Re-sync strategy:
+        //   Standalone loopback (no link): TX and RX are the same PRBS stream —
+        //     reset RX to TX state so both stay in lock-step.
+        //   Link / network mode: RX tracks the REMOTE TX, which is an independent
+        //     sequence.  Setting RX = local TX is wrong and causes every subsequent
+        //     packet to mismatch too.  Instead, leave rxLfsrState where it is after
+        //     consuming the full expected packet above; it will re-align naturally
+        //     on the next good packet.
+        if (pduLink_ == nullptr)
+            local_.rxLfsrState = local_.txLfsrState;
         if (log_ != nullptr)
             log_->vlog(LOG_WARNING, logTag_, "PRBS mismatch — re-synced (bad=%" PRIu64 ")",
                        stats_.badPackets);

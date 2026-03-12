@@ -1,5 +1,15 @@
 # Changelog - xcespproc
 
+## 0.0.17
+
+- `PktBertPObj::generateAndSendPacket()`: move link-UP check to before TX LFSR
+  advancement so the state does not drift when the link is still initializing;
+  prevents initial PRBS desync on link-mode startup
+- `PktBertPObj::receivePacket()`: fix re-sync in link/network mode — `rxLfsrState`
+  now left at end-of-packet (tracking the remote TX stream) instead of being
+  overwritten with the local `txLfsrState`; the bogus overwrite caused oscillating
+  mismatches where every subsequent packet failed after the first mismatch
+
 ## 0.0.16
 
 - `ProcObject`: add `nodePath_` field (loaded from `NODE_PATH` INI key injected by xcespmap);
